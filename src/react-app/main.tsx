@@ -137,6 +137,18 @@ type Win = {
   updated_at: string;
 };
 
+const RASCI_ROLES = [
+  { value: "R", label: "Responsible" },
+  { value: "A", label: "Accountable" },
+  { value: "S", label: "Supportive" },
+  { value: "C", label: "Consulted" },
+  { value: "I", label: "Informed" },
+];
+
+function roleLabel(value: string | null | undefined) {
+  return RASCI_ROLES.find((role) => role.value === value)?.label || "";
+}
+
 async function apiJson<T>(path: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
   if (!(init.body instanceof FormData) && init.body && !headers.has("content-type")) {
@@ -491,7 +503,12 @@ function Dashboard() {
 
 function TodoPersonBadge({ todo }: { todo: Todo }) {
   if (!todo.person_name) return null;
-  return <em className="person-role-badge">{todo.person_role ? `[${todo.person_role}] ` : ""}{todo.person_name}</em>;
+  return (
+    <em className="person-role-badge" title={todo.person_role ? roleLabel(todo.person_role) : undefined}>
+      {todo.person_role ? `[${todo.person_role}] ` : ""}
+      {todo.person_name}
+    </em>
+  );
 }
 
 function DashboardTodoItem({
@@ -1395,6 +1412,7 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
   const [todoBody, setTodoBody] = useState("");
   const [todoDue, setTodoDue] = useState("");
   const [todoPerson, setTodoPerson] = useState("");
+  const [todoRole, setTodoRole] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -1435,11 +1453,12 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
     event.preventDefault();
     await apiJson(`/api/protocols/${id}/todos`, {
       method: "POST",
-      body: JSON.stringify({ body: todoBody, due_date: todoDue, person_id: todoPerson }),
+      body: JSON.stringify({ body: todoBody, due_date: todoDue, person_id: todoPerson, person_role: todoRole }),
     });
     setTodoBody("");
     setTodoDue("");
     setTodoPerson("");
+    setTodoRole("");
     await load();
   }
 
@@ -1511,8 +1530,8 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
               <input type="checkbox" checked={Boolean(todo.done)} onChange={() => toggleTodo(todo)} />
               <span>
                 <strong>{todo.body}</strong>
-                {todo.due_date ? <small>due {todo.due_date}</small> : null}
-                {todo.person_name ? <em>{todo.person_name}</em> : null}
+                <DeadlineBadge value={todo.due_date} />
+                <TodoPersonBadge todo={todo} />
               </span>
             </label>
           ))}
@@ -1528,7 +1547,13 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
           </label>
           <label>
             Person
-            <select value={todoPerson} onChange={(event) => setTodoPerson(event.target.value)}>
+            <select
+              value={todoPerson}
+              onChange={(event) => {
+                setTodoPerson(event.target.value);
+                if (!event.target.value) setTodoRole("");
+              }}
+            >
               <option value="">None</option>
               {people.map((person) => (
                 <option value={person.id} key={person.id}>
@@ -1537,6 +1562,26 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
               ))}
             </select>
           </label>
+          {todoPerson ? (
+            <div className="field-group">
+              <span className="field-label">Role</span>
+              <div className="rasci-control" role="group" aria-label="RASCI role">
+                {RASCI_ROLES.map((role) => (
+                  <button
+                    aria-pressed={todoRole === role.value}
+                    className={`role-chip ${todoRole === role.value ? "active" : ""}`}
+                    key={role.value}
+                    onClick={() => setTodoRole((current) => (current === role.value ? "" : role.value))}
+                    title={role.label}
+                    type="button"
+                  >
+                    {role.value}
+                  </button>
+                ))}
+              </div>
+              <span className="helper-text">{todoRole ? roleLabel(todoRole) : "Optional"}</span>
+            </div>
+          ) : null}
           <IconButton type="submit" icon={<Plus size={18} />}>
             Add
           </IconButton>

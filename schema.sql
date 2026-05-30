@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS todos (
   done INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
   due_date TEXT,
   person_id TEXT REFERENCES people(id) ON DELETE SET NULL,
+  person_role TEXT,
   position INTEGER,
   created_at TEXT,
   updated_at TEXT

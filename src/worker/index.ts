@@ -190,6 +190,12 @@ function validateCheckinSession(value: unknown): CheckinSession | null {
   return value === "morning" || value === "evening" ? value : null;
 }
 
+function validateTodoPersonRole(value: unknown) {
+  const role = nullableString(value)?.toUpperCase() ?? null;
+  if (!role) return null;
+  return ["R", "A", "S", "C", "I"].includes(role) ? role : undefined;
+}
+
 function validateDateString(value: string) {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
@@ -804,7 +810,7 @@ api.get("/todos", async (c) => {
   const today = c.req.query("date") || todayDate();
   const openTodos = await all<TodoRow>(
     c.env,
-    `SELECT todos.*, people.name AS person_name, NULL AS person_role,
+    `SELECT todos.*, people.name AS person_name,
       protocols.title AS protocol_title,
       protocols.project_id AS project_id,
       projects.title AS project_title
@@ -817,7 +823,7 @@ api.get("/todos", async (c) => {
   );
   const completedToday = await all<TodoRow>(
     c.env,
-    `SELECT todos.*, people.name AS person_name, NULL AS person_role,
+    `SELECT todos.*, people.name AS person_name,
       protocols.title AS protocol_title,
       protocols.project_id AS project_id,
       projects.title AS project_title
@@ -876,6 +882,8 @@ api.post("/protocols/:id/todos", async (c) => {
 
   const personId = nullableString(body.person_id);
   if (!(await validPersonForProtocol(c.env, protocolId, personId))) return jsonError(c, 400, "Person does not belong to this project");
+  const personRole = validateTodoPersonRole(body.person_role);
+  if (personRole === undefined) return jsonError(c, 400, "Invalid RASCI role");
 
   const timestamp = nowIso();
   const maxPosition = await first<{ position: number | null }>(c.env, "SELECT MAX(position) AS position FROM todos");
@@ -886,6 +894,7 @@ api.post("/protocols/:id/todos", async (c) => {
     done: body.done === true || body.done === 1 ? 1 : 0,
     due_date: nullableString(body.due_date),
     person_id: personId,
+    person_role: personId ? personRole : null,
     position: (maxPosition?.position || 0) + 1,
     created_at: timestamp,
     updated_at: timestamp,
@@ -893,13 +902,14 @@ api.post("/protocols/:id/todos", async (c) => {
 
   await run(
     c.env,
-    "INSERT INTO todos (id, protocol_id, body, done, due_date, person_id, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO todos (id, protocol_id, body, done, due_date, person_id, person_role, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     todo.id,
     todo.protocol_id,
     todo.body,
     todo.done,
     todo.due_date,
     todo.person_id,
+    todo.person_role,
     todo.position,
     todo.created_at,
     todo.updated_at,
@@ -939,13 +949,24 @@ api.patch("/todos/:id", async (c) => {
     sets.push("due_date = ?");
     values.push(nullableString(body.due_date));
   }
+  let nextPersonId = existing.person_id;
   if (hasOwn(body, "person_id")) {
     const personId = nullableString(body.person_id);
     if (!(await validPersonForProtocol(c.env, existing.protocol_id, personId))) {
       return jsonError(c, 400, "Person does not belong to this project");
     }
+    nextPersonId = personId;
     sets.push("person_id = ?");
     values.push(personId);
+  }
+  if (hasOwn(body, "person_role")) {
+    const personRole = validateTodoPersonRole(body.person_role);
+    if (personRole === undefined) return jsonError(c, 400, "Invalid RASCI role");
+    sets.push("person_role = ?");
+    values.push(nextPersonId ? personRole : null);
+  } else if (hasOwn(body, "person_id") && !nextPersonId) {
+    sets.push("person_role = ?");
+    values.push(null);
   }
 
   if (!sets.length) return c.json({ todo: existing });

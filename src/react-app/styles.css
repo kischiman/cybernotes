@@ -222,7 +222,7 @@ h3 {
   gap: 2px;
 }
 
-.protocol-row span,
+.protocol-row > div span,
 .protocol-row small {
   color: var(--muted);
 }
@@ -249,7 +249,7 @@ h3 {
   gap: 2px;
 }
 
-.protocol-summary-row span {
+.protocol-summary-row div span {
   color: var(--muted);
 }
 
@@ -344,6 +344,15 @@ h3 {
 label {
   display: grid;
   gap: 6px;
+  font-weight: 700;
+}
+
+.field-group {
+  display: grid;
+  gap: 6px;
+}
+
+.field-label {
   font-weight: 700;
 }
 
@@ -475,7 +484,7 @@ a:focus-visible {
   padding-top: 3px;
 }
 
-.dashboard-todo span {
+.dashboard-todo > div > span {
   color: var(--muted);
   font-size: 0.88rem;
 }
@@ -515,6 +524,39 @@ a:focus-visible {
   line-height: 1.4;
 }
 
+.todo .person-role-badge {
+  background: #eee;
+  color: #000;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.rasci-control {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(44px, 1fr));
+  gap: 6px;
+}
+
+.role-chip {
+  min-height: 44px;
+  border: 1px solid #000;
+  background: #fff;
+  color: #000;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 700;
+}
+
+.role-chip.active {
+  background: #000;
+  color: #fff;
+}
+
+.helper-text {
+  color: var(--muted);
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  font-weight: 400;
+}
+
 .completed-toggle {
   display: grid;
   grid-template-columns: 1fr auto 24px;
@@ -551,7 +593,7 @@ a:focus-visible {
   margin: 0;
 }
 
-.todo span {
+.todo > span {
   display: grid;
   gap: 2px;
   padding-top: 4px;
