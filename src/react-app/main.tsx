@@ -18,6 +18,7 @@ import {
   Plus,
   Settings,
   Trash2,
+  Trophy,
   UserPlus,
   X,
 } from "lucide-react";
@@ -119,6 +120,15 @@ type CheckinEntryBundle = {
 
 type CheckinTemplatesBySession = Record<CheckinSession, CheckinTemplate[]>;
 type CheckinEntriesBySession = Record<CheckinSession, CheckinEntryBundle | null>;
+
+type Win = {
+  id: string;
+  body: string;
+  project_id: string | null;
+  project_title?: string | null;
+  created_at: string;
+  updated_at: string;
+};
 
 async function apiJson<T>(path: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
@@ -232,6 +242,7 @@ function App() {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/today" element={<TodayScreen />} />
+            <Route path="/wins" element={<WinsScreen />} />
             <Route path="/vision" element={<VisionScreen />} />
             <Route path="/archive" element={<ArchiveScreen />} />
             <Route path="/archive/:id" element={<ProjectScreen readOnly />} />
@@ -319,6 +330,10 @@ function Dashboard() {
         <NavLink className="button primary" to="/projects/new">
           <Plus size={18} />
           <span>New Project</span>
+        </NavLink>
+        <NavLink className="button" to="/wins">
+          <Trophy size={18} />
+          <span>Wins</span>
         </NavLink>
       </div>
       {!projects.length ? (
@@ -710,6 +725,166 @@ function CheckinSettingsSheet({
         ))}
       </div>
     </div>
+  );
+}
+
+function WinsScreen() {
+  const [wins, setWins] = useState<Win[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [addOpen, setAddOpen] = useState(false);
+  const [newBody, setNewBody] = useState("");
+  const [newProjectId, setNewProjectId] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingBody, setEditingBody] = useState("");
+  const [editingProjectId, setEditingProjectId] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load() {
+    setLoading(true);
+    setError(null);
+    try {
+      const [{ wins: nextWins }, { projects: nextProjects }] = await Promise.all([
+        apiJson<{ wins: Win[] }>("/api/wins"),
+        apiJson<{ projects: Project[] }>("/api/projects?status=active"),
+      ]);
+      setWins(nextWins);
+      setProjects(nextProjects);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Could not load wins");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function addWin(event: React.FormEvent) {
+    event.preventDefault();
+    await apiJson("/api/wins", {
+      method: "POST",
+      body: JSON.stringify({ body: newBody, project_id: newProjectId || null }),
+    });
+    setNewBody("");
+    setNewProjectId("");
+    setAddOpen(false);
+    await load();
+  }
+
+  function startEdit(win: Win) {
+    setEditingId(win.id);
+    setEditingBody(win.body);
+    setEditingProjectId(win.project_id || "");
+  }
+
+  async function saveEdit(win: Win) {
+    await apiJson(`/api/wins/${win.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ body: editingBody, project_id: editingProjectId || null }),
+    });
+    setEditingId(null);
+    await load();
+  }
+
+  async function deleteWin(win: Win) {
+    if (!window.confirm("Delete this win?")) return;
+    await apiJson(`/api/wins/${win.id}`, { method: "DELETE" });
+    await load();
+  }
+
+  if (loading) return <Loading />;
+
+  return (
+    <section>
+      <header className="topbar compact">
+        <BackButton />
+        <div>
+          <p className="eyebrow">Log</p>
+          <h1>Wins</h1>
+        </div>
+      </header>
+      <ErrorBanner message={error} />
+      <div className="action-row">
+        <IconButton className="primary" type="button" onClick={() => setAddOpen(true)} icon={<Plus size={18} />}>
+          Add Win
+        </IconButton>
+      </div>
+      {!wins.length ? (
+        <Empty>No wins logged yet.</Empty>
+      ) : (
+        <div className="stack">
+          {wins.map((win) => (
+            <article className="card win-card" key={win.id}>
+              {editingId === win.id ? (
+                <div className="form">
+                  <textarea value={editingBody} onChange={(event) => setEditingBody(event.target.value)} rows={4} />
+                  <select value={editingProjectId} onChange={(event) => setEditingProjectId(event.target.value)}>
+                    <option value="">No project</option>
+                    {projects.map((project) => (
+                      <option value={project.id} key={project.id}>
+                        {project.title}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="small-actions">
+                    <button className="icon-only" type="button" onClick={() => saveEdit(win)} aria-label="Save win" title="Save win">
+                      <Check size={18} />
+                    </button>
+                    <button className="icon-only" type="button" onClick={() => setEditingId(null)} aria-label="Cancel edit" title="Cancel edit">
+                      <X size={18} />
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button className="unstyled win-main" type="button" onClick={() => startEdit(win)}>
+                  <p>{win.body}</p>
+                  <span>
+                    {formatDateTime(win.created_at)}
+                    {win.project_title ? <strong>{win.project_title}</strong> : null}
+                  </span>
+                </button>
+              )}
+              <button className="icon-only danger" type="button" onClick={() => deleteWin(win)} aria-label="Delete win" title="Delete win">
+                <Trash2 size={18} />
+              </button>
+            </article>
+          ))}
+        </div>
+      )}
+
+      {addOpen ? (
+        <div className="sheet-backdrop">
+          <form className="sheet form" onSubmit={addWin}>
+            <div className="section-heading">
+              <h2>Add Win</h2>
+              <button className="icon-only" type="button" onClick={() => setAddOpen(false)} aria-label="Close" title="Close">
+                <X size={20} />
+              </button>
+            </div>
+            <label>
+              Win
+              <textarea value={newBody} onChange={(event) => setNewBody(event.target.value)} rows={5} required />
+            </label>
+            <label>
+              Project
+              <select value={newProjectId} onChange={(event) => setNewProjectId(event.target.value)}>
+                <option value="">No project</option>
+                {projects.map((project) => (
+                  <option value={project.id} key={project.id}>
+                    {project.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <IconButton className="primary" type="submit" icon={<Check size={18} />}>
+              Save
+            </IconButton>
+          </form>
+        </div>
+      ) : null}
+    </section>
   );
 }
 

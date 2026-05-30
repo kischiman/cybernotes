@@ -104,6 +104,15 @@ type CheckinAnswerRow = {
   position: number;
 };
 
+type WinRow = {
+  id: string;
+  body: string;
+  project_id: string | null;
+  project_title?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 const SESSION_COOKIE = "cybernotes_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
 const encoder = new TextEncoder();
@@ -977,6 +986,91 @@ api.delete("/people/:id", async (c) => {
   if (!existing) return jsonError(c, 404, "Person not found");
   await run(c.env, "UPDATE todos SET person_id = NULL, updated_at = ? WHERE person_id = ?", nowIso(), id);
   await run(c.env, "DELETE FROM people WHERE id = ?", id);
+  return c.json({ ok: true });
+});
+
+api.get("/wins", async (c) => {
+  const wins = await all<WinRow>(
+    c.env,
+    `SELECT wins.*, projects.title AS project_title
+     FROM wins
+     LEFT JOIN projects ON projects.id = wins.project_id
+     ORDER BY datetime(wins.created_at) DESC`,
+  );
+  return c.json({ wins });
+});
+
+async function validProjectId(env: Env, projectId: string | null) {
+  if (!projectId) return true;
+  const project = await first<ProjectRow>(env, "SELECT * FROM projects WHERE id = ?", projectId);
+  return Boolean(project);
+}
+
+api.post("/wins", async (c) => {
+  const body = await readJson(c);
+  const winBody = cleanString(body.body);
+  if (!winBody) return jsonError(c, 400, "Win body is required");
+  const projectId = nullableString(body.project_id);
+  if (!(await validProjectId(c.env, projectId))) return jsonError(c, 400, "Project not found");
+
+  const timestamp = nowIso();
+  const win: WinRow = {
+    id: crypto.randomUUID(),
+    body: winBody,
+    project_id: projectId,
+    created_at: timestamp,
+    updated_at: timestamp,
+  };
+  await run(
+    c.env,
+    "INSERT INTO wins (id, body, project_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    win.id,
+    win.body,
+    win.project_id,
+    win.created_at,
+    win.updated_at,
+  );
+  return c.json({ win }, 201);
+});
+
+api.patch("/wins/:id", async (c) => {
+  const id = c.req.param("id");
+  const existing = await first<WinRow>(c.env, "SELECT * FROM wins WHERE id = ?", id);
+  if (!existing) return jsonError(c, 404, "Win not found");
+
+  const body = await readJson(c);
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  if (hasOwn(body, "body")) {
+    const winBody = cleanString(body.body);
+    if (!winBody) return jsonError(c, 400, "Win body cannot be empty");
+    sets.push("body = ?");
+    values.push(winBody);
+  }
+  if (hasOwn(body, "project_id")) {
+    const projectId = nullableString(body.project_id);
+    if (!(await validProjectId(c.env, projectId))) return jsonError(c, 400, "Project not found");
+    sets.push("project_id = ?");
+    values.push(projectId);
+  }
+
+  if (!sets.length) return c.json({ win: existing });
+  sets.push("updated_at = ?");
+  values.push(nowIso(), id);
+  await run(c.env, `UPDATE wins SET ${sets.join(", ")} WHERE id = ?`, ...values);
+  const win = await first<WinRow>(
+    c.env,
+    "SELECT wins.*, projects.title AS project_title FROM wins LEFT JOIN projects ON projects.id = wins.project_id WHERE wins.id = ?",
+    id,
+  );
+  return c.json({ win });
+});
+
+api.delete("/wins/:id", async (c) => {
+  const id = c.req.param("id");
+  const existing = await first<WinRow>(c.env, "SELECT * FROM wins WHERE id = ?", id);
+  if (!existing) return jsonError(c, 404, "Win not found");
+  await run(c.env, "DELETE FROM wins WHERE id = ?", id);
   return c.json({ ok: true });
 });
 

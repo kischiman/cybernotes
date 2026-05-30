@@ -90,6 +90,14 @@ CREATE TABLE IF NOT EXISTS checkin_answers (
   position INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS wins (
+  id TEXT PRIMARY KEY,
+  body TEXT NOT NULL,
+  project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+  created_at TEXT,
+  updated_at TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
 CREATE INDEX IF NOT EXISTS idx_protocols_project_id ON protocols(project_id);
 CREATE INDEX IF NOT EXISTS idx_entries_protocol_id_created_at ON entries(protocol_id, created_at);
@@ -99,3 +107,5 @@ CREATE INDEX IF NOT EXISTS idx_todos_protocol_id_done ON todos(protocol_id, done
 CREATE UNIQUE INDEX IF NOT EXISTS idx_checkin_entries_date_session ON checkin_entries(date, session);
 CREATE INDEX IF NOT EXISTS idx_checkin_templates_session_position ON checkin_templates(session, position);
 CREATE INDEX IF NOT EXISTS idx_checkin_answers_entry_id_position ON checkin_answers(entry_id, position);
+CREATE INDEX IF NOT EXISTS idx_wins_created_at ON wins(created_at);
+CREATE INDEX IF NOT EXISTS idx_wins_project_id ON wins(project_id);

@@ -528,6 +528,33 @@ a:focus-visible {
   margin-top: 12px;
 }
 
+.win-card {
+  display: grid;
+  grid-template-columns: 1fr 44px;
+  align-items: start;
+  gap: 12px;
+}
+
+.win-main {
+  display: grid;
+  gap: 8px;
+}
+
+.win-main span {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted);
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.84rem;
+}
+
+.win-main strong {
+  color: var(--accent);
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+}
+
 .sheet-backdrop {
   position: fixed;
   inset: 0;
