@@ -141,6 +141,10 @@ h3 {
   margin-bottom: 20px;
 }
 
+.action-row.align-end {
+  justify-content: flex-end;
+}
+
 .section-heading {
   justify-content: space-between;
   margin-bottom: 12px;
@@ -430,6 +434,100 @@ a:focus-visible {
   text-decoration: line-through;
 }
 
+.checkin-card {
+  display: grid;
+  gap: 12px;
+}
+
+.checkin-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.checkin-summary svg,
+.rotate {
+  transition: transform 160ms ease;
+}
+
+.rotate {
+  transform: rotate(180deg);
+}
+
+.checkin-form {
+  display: grid;
+  max-height: 62vh;
+  gap: 14px;
+  overflow: auto;
+  padding-top: 12px;
+  border-top: 1px solid #000;
+}
+
+.checkin-form label span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.optional {
+  border: 1px solid #000;
+  padding: 1px 6px;
+  color: var(--muted);
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  font-style: normal;
+  font-weight: 400;
+}
+
+.past-date-row {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #000;
+  background: #fff;
+  padding: 10px 12px;
+  color: #000;
+  text-align: left;
+}
+
+.past-date-row span {
+  color: var(--muted);
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.settings-sheet {
+  display: block;
+}
+
+.checkin-settings-list {
+  margin-top: 12px;
+}
+
+.settings-row {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  border: 1px solid #000;
+  background: #fff;
+  padding: 8px;
+}
+
+.settings-row > svg {
+  cursor: grab;
+  color: var(--muted);
+}
+
+.inline-add-row {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 .sheet-backdrop {
   position: fixed;
   inset: 0;
@@ -478,7 +576,7 @@ a:focus-visible {
   left: 0;
   z-index: 10;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   border-top: 1px solid #000;
   background: #fff;
 }
@@ -491,6 +589,7 @@ a:focus-visible {
   gap: 6px;
   border-right: 1px solid #000;
   font-weight: 700;
+  font-size: 0.92rem;
 }
 
 .bottom-nav a:last-child {
@@ -514,6 +613,11 @@ a:focus-visible {
   .inline-form {
     grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) auto;
     align-items: end;
+  }
+
+  .inline-add-row {
+    grid-template-columns: 1fr auto;
+    align-items: center;
   }
 
   .bottom-nav {

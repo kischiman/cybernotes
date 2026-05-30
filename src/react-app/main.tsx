@@ -5,13 +5,18 @@ import {
   Archive,
   ArrowLeft,
   Camera,
+  CalendarDays,
   Check,
+  ChevronDown,
   ClipboardList,
   Download,
+  GripVertical,
   Eye,
+  History,
   Home,
   LogOut,
   Plus,
+  Settings,
   Trash2,
   UserPlus,
   X,
@@ -81,6 +86,40 @@ type Person = {
   created_at: string;
 };
 
+type CheckinSession = "morning" | "evening";
+
+type CheckinTemplate = {
+  id: string;
+  session: CheckinSession;
+  question: string;
+  position: number;
+  created_at: string;
+  archived_at: string | null;
+};
+
+type CheckinAnswer = {
+  id: string;
+  entry_id: string;
+  template_id: string;
+  question_snapshot: string;
+  answer: string | null;
+  position: number;
+};
+
+type CheckinEntryBundle = {
+  entry: {
+    id: string;
+    date: string;
+    session: CheckinSession;
+    created_at: string;
+    updated_at: string;
+  };
+  answers: CheckinAnswer[];
+};
+
+type CheckinTemplatesBySession = Record<CheckinSession, CheckinTemplate[]>;
+type CheckinEntriesBySession = Record<CheckinSession, CheckinEntryBundle | null>;
+
 async function apiJson<T>(path: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
   if (!(init.body instanceof FormData) && init.body && !headers.has("content-type")) {
@@ -144,6 +183,12 @@ function localDateTimeValue() {
   return date.toISOString().slice(0, 16);
 }
 
+function localDateValue(date = new Date()) {
+  const copy = new Date(date);
+  copy.setMinutes(copy.getMinutes() - copy.getTimezoneOffset());
+  return copy.toISOString().slice(0, 10);
+}
+
 function ErrorBanner({ message }: { message: string | null }) {
   if (!message) return null;
   return <div className="error-banner">{message}</div>;
@@ -186,6 +231,7 @@ function App() {
         <main className="main">
           <Routes>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/today" element={<TodayScreen />} />
             <Route path="/vision" element={<VisionScreen />} />
             <Route path="/archive" element={<ArchiveScreen />} />
             <Route path="/archive/:id" element={<ProjectScreen readOnly />} />
@@ -205,6 +251,10 @@ function App() {
 function BottomNav() {
   return (
     <nav className="bottom-nav" aria-label="Primary">
+      <NavLink to="/today">
+        <CalendarDays size={20} />
+        <span>Today</span>
+      </NavLink>
       <NavLink to="/">
         <Home size={20} />
         <span>Dashboard</span>
@@ -302,6 +352,367 @@ function Dashboard() {
   );
 }
 
+const EMPTY_CHECKIN_TEMPLATES: CheckinTemplatesBySession = { morning: [], evening: [] };
+const EMPTY_CHECKIN_ENTRIES: CheckinEntriesBySession = { morning: null, evening: null };
+const CHECKIN_SESSIONS: CheckinSession[] = ["morning", "evening"];
+
+function answerMap(bundle: CheckinEntryBundle | null) {
+  return Object.fromEntries((bundle?.answers || []).map((answer) => [answer.template_id, answer.answer || ""]));
+}
+
+function TodayScreen() {
+  const today = localDateValue();
+  const [selectedDate, setSelectedDate] = useState(today);
+  const [templates, setTemplates] = useState<CheckinTemplatesBySession>(EMPTY_CHECKIN_TEMPLATES);
+  const [entries, setEntries] = useState<CheckinEntriesBySession>(EMPTY_CHECKIN_ENTRIES);
+  const [answers, setAnswers] = useState<Record<CheckinSession, Record<string, string>>>({ morning: {}, evening: {} });
+  const [dates, setDates] = useState<Array<{ date: string; sessions: string }>>([]);
+  const [openSession, setOpenSession] = useState<CheckinSession>("morning");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [datesOpen, setDatesOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load(date = selectedDate) {
+    setLoading(true);
+    setError(null);
+    try {
+      const [templateData, entryData, dateData] = await Promise.all([
+        apiJson<{ templates: CheckinTemplatesBySession }>("/api/checkin/templates"),
+        apiJson<{ entries: CheckinEntriesBySession }>(`/api/checkin/entries/${date}`),
+        apiJson<{ dates: Array<{ date: string; sessions: string }> }>("/api/checkin/entries"),
+      ]);
+      setTemplates(templateData.templates);
+      setEntries(entryData.entries);
+      setAnswers({
+        morning: answerMap(entryData.entries.morning),
+        evening: answerMap(entryData.entries.evening),
+      });
+      setDates(dateData.dates);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Could not load check-in");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void load(selectedDate);
+  }, [selectedDate]);
+
+  async function saveSession(session: CheckinSession) {
+    setError(null);
+    try {
+      await apiJson("/api/checkin/entries", {
+        method: "POST",
+        body: JSON.stringify({
+          date: selectedDate,
+          session,
+          answers: templates[session].map((template) => ({
+            template_id: template.id,
+            answer: answers[session][template.id] || "",
+          })),
+        }),
+      });
+      await load(selectedDate);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Could not save check-in");
+    }
+  }
+
+  function updateAnswer(session: CheckinSession, templateId: string, value: string) {
+    setAnswers((current) => ({
+      ...current,
+      [session]: { ...current[session], [templateId]: value },
+    }));
+  }
+
+  function selectPastDate(date: string) {
+    setSelectedDate(date);
+    setDatesOpen(false);
+    setOpenSession("morning");
+  }
+
+  if (loading) return <Loading />;
+
+  const readOnly = selectedDate !== today;
+
+  return (
+    <section>
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Today</p>
+          <h1>{formatDate(selectedDate)}</h1>
+        </div>
+        <div className="small-actions">
+          <button className="icon-only" type="button" onClick={() => setDatesOpen(true)} aria-label="Past entries" title="Past entries">
+            <History size={20} />
+          </button>
+          <button className="icon-only" type="button" onClick={() => setSettingsOpen(true)} aria-label="Check-in settings" title="Check-in settings">
+            <Settings size={20} />
+          </button>
+        </div>
+      </header>
+      <ErrorBanner message={error} />
+      {readOnly ? (
+        <div className="action-row">
+          <button className="button" type="button" onClick={() => setSelectedDate(today)}>
+            <CalendarDays size={18} />
+            <span>Today</span>
+          </button>
+        </div>
+      ) : null}
+
+      <div className="stack">
+        {CHECKIN_SESSIONS.map((session) => (
+          <CheckinSessionPanel
+            answers={answers[session]}
+            bundle={entries[session]}
+            isOpen={openSession === session}
+            key={session}
+            onAnswer={(templateId, value) => updateAnswer(session, templateId, value)}
+            onSave={() => saveSession(session)}
+            onToggle={() => setOpenSession(openSession === session ? (session === "morning" ? "evening" : "morning") : session)}
+            readOnly={readOnly}
+            session={session}
+            templates={templates[session]}
+          />
+        ))}
+      </div>
+
+      {datesOpen ? (
+        <div className="sheet-backdrop">
+          <div className="sheet">
+            <div className="section-heading">
+              <h2>Past Entries</h2>
+              <button className="icon-only" type="button" onClick={() => setDatesOpen(false)} aria-label="Close" title="Close">
+                <X size={20} />
+              </button>
+            </div>
+            {!dates.length ? <Empty>No saved check-ins.</Empty> : null}
+            <div className="stack compact-stack">
+              {dates.map((date) => (
+                <button className="past-date-row" type="button" key={date.date} onClick={() => selectPastDate(date.date)}>
+                  <strong>{formatDate(date.date)}</strong>
+                  <span>{date.sessions.replace(",", " + ")}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {settingsOpen ? (
+        <CheckinSettingsSheet
+          onClose={() => setSettingsOpen(false)}
+          onTemplatesChange={(nextTemplates) => setTemplates(nextTemplates)}
+          reload={() => load(selectedDate)}
+          templates={templates}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function CheckinSessionPanel({
+  answers,
+  bundle,
+  isOpen,
+  onAnswer,
+  onSave,
+  onToggle,
+  readOnly,
+  session,
+  templates,
+}: {
+  answers: Record<string, string>;
+  bundle: CheckinEntryBundle | null;
+  isOpen: boolean;
+  onAnswer: (templateId: string, value: string) => void;
+  onSave: () => Promise<void>;
+  onToggle: () => void;
+  readOnly: boolean;
+  session: CheckinSession;
+  templates: CheckinTemplate[];
+}) {
+  const historicalAnswers = bundle?.answers || [];
+  return (
+    <article className="card checkin-card">
+      <button className="unstyled checkin-summary" type="button" onClick={onToggle}>
+        <div>
+          <h2>{session === "morning" ? "Morning" : "Evening"}</h2>
+          <p className="meta">{bundle ? `Saved ${formatDateTime(bundle.entry.updated_at)}` : "Not saved yet"}</p>
+        </div>
+        <ChevronDown className={isOpen ? "rotate" : ""} size={20} />
+      </button>
+      {isOpen ? (
+        <div className="checkin-form">
+          {!readOnly ? (
+            <div className="action-row align-end">
+              <IconButton type="button" className="primary" onClick={onSave} icon={<Check size={18} />}>
+                Save
+              </IconButton>
+            </div>
+          ) : null}
+          {readOnly ? (
+            historicalAnswers.length ? (
+              historicalAnswers.map((answer) => (
+                <label key={answer.id}>
+                  {answer.question_snapshot}
+                  <textarea value={answer.answer || ""} readOnly rows={4} />
+                </label>
+              ))
+            ) : (
+              <Empty>No saved {session} check-in.</Empty>
+            )
+          ) : (
+            templates.map((template) => (
+              <label key={template.id}>
+                <span>
+                  {template.question}
+                  {template.question.toLowerCase() === "letters to god" ? <em className="optional">optional</em> : null}
+                </span>
+                <textarea
+                  value={answers[template.id] || ""}
+                  onChange={(event) => onAnswer(template.id, event.target.value)}
+                  rows={4}
+                />
+              </label>
+            ))
+          )}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function CheckinSettingsSheet({
+  onClose,
+  onTemplatesChange,
+  reload,
+  templates,
+}: {
+  onClose: () => void;
+  onTemplatesChange: (templates: CheckinTemplatesBySession) => void;
+  reload: () => Promise<void>;
+  templates: CheckinTemplatesBySession;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [newQuestion, setNewQuestion] = useState<Record<CheckinSession, string>>({ morning: "", evening: "" });
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+
+  async function updateTemplate(template: CheckinTemplate, payload: Partial<Pick<CheckinTemplate, "question" | "position">>) {
+    await apiJson(`/api/checkin/templates/${template.id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async function addQuestion(session: CheckinSession) {
+    const question = newQuestion[session].trim();
+    if (!question) return;
+    await apiJson("/api/checkin/templates", {
+      method: "POST",
+      body: JSON.stringify({ session, question, position: templates[session].length + 1 }),
+    });
+    setNewQuestion((current) => ({ ...current, [session]: "" }));
+    await reload();
+  }
+
+  async function archiveQuestion(template: CheckinTemplate) {
+    if (!window.confirm("This question will be hidden from future check-ins. Past answers are preserved.")) return;
+    await apiJson(`/api/checkin/templates/${template.id}`, { method: "DELETE" });
+    await reload();
+  }
+
+  async function saveEdit(template: CheckinTemplate) {
+    await updateTemplate(template, { question: draft });
+    setEditingId(null);
+    setDraft("");
+    await reload();
+  }
+
+  async function reorder(session: CheckinSession, targetId: string) {
+    if (!draggingId || draggingId === targetId) return;
+    const current = templates[session];
+    const from = current.findIndex((template) => template.id === draggingId);
+    const to = current.findIndex((template) => template.id === targetId);
+    if (from < 0 || to < 0) return;
+    const next = [...current];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    const nextTemplates = { ...templates, [session]: next.map((template, index) => ({ ...template, position: index + 1 })) };
+    onTemplatesChange(nextTemplates);
+    await Promise.all(nextTemplates[session].map((template) => updateTemplate(template, { position: template.position })));
+    setDraggingId(null);
+    await reload();
+  }
+
+  return (
+    <div className="sheet-backdrop">
+      <div className="sheet settings-sheet">
+        <div className="section-heading">
+          <h2>Check-in Settings</h2>
+          <button className="icon-only" type="button" onClick={onClose} aria-label="Close" title="Close">
+            <X size={20} />
+          </button>
+        </div>
+        {CHECKIN_SESSIONS.map((session) => (
+          <section className="section-block" key={session}>
+            <h3>{session === "morning" ? "Morning" : "Evening"}</h3>
+            <div className="stack compact-stack checkin-settings-list">
+              {templates[session].map((template) => (
+                <article
+                  className="settings-row"
+                  draggable
+                  key={template.id}
+                  onDragStart={() => setDraggingId(template.id)}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={() => reorder(session, template.id)}
+                >
+                  <GripVertical size={18} />
+                  {editingId === template.id ? (
+                    <input value={draft} onChange={(event) => setDraft(event.target.value)} />
+                  ) : (
+                    <button
+                      className="unstyled"
+                      type="button"
+                      onClick={() => {
+                        setEditingId(template.id);
+                        setDraft(template.question);
+                      }}
+                    >
+                      {template.question}
+                    </button>
+                  )}
+                  <div className="small-actions">
+                    {editingId === template.id ? (
+                      <button className="icon-only" type="button" onClick={() => saveEdit(template)} aria-label="Save question" title="Save question">
+                        <Check size={18} />
+                      </button>
+                    ) : null}
+                    <button className="icon-only danger" type="button" onClick={() => archiveQuestion(template)} aria-label="Archive question" title="Archive question">
+                      <Trash2 size={18} />
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+            <div className="inline-add-row">
+              <input value={newQuestion[session]} onChange={(event) => setNewQuestion((current) => ({ ...current, [session]: event.target.value }))} />
+              <button className="button" type="button" onClick={() => addQuestion(session)}>
+                <Plus size={18} />
+                <span>Add question</span>
+              </button>
+            </div>
+          </section>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ProjectForm() {
   const navigate = useNavigate();
   const [title, setTitle] = useState("");
@@ -352,7 +763,7 @@ function ProjectForm() {
 }
 
 function todayInputValue() {
-  return new Date().toISOString().slice(0, 10);
+  return localDateValue();
 }
 
 function ProjectScreen({ readOnly = false }: { readOnly?: boolean }) {

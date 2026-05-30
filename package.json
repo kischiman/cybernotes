@@ -10,6 +10,8 @@
     "deploy": "npm run build && wrangler deploy",
     "db:apply:local": "wrangler d1 execute cybernotes --local --file schema.sql",
     "db:apply:remote": "wrangler d1 execute cybernotes --remote --file schema.sql",
+    "db:migrations:local": "wrangler d1 migrations apply cybernotes --local",
+    "db:migrations:remote": "wrangler d1 migrations apply cybernotes --remote",
     "cf-typegen": "wrangler types"
   },
   "dependencies": {

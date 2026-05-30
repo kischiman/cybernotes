@@ -76,6 +76,34 @@ type PersonRow = {
   created_at: string;
 };
 
+type CheckinSession = "morning" | "evening";
+
+type CheckinTemplateRow = {
+  id: string;
+  session: CheckinSession;
+  question: string;
+  position: number;
+  created_at: string;
+  archived_at: string | null;
+};
+
+type CheckinEntryRow = {
+  id: string;
+  date: string;
+  session: CheckinSession;
+  created_at: string;
+  updated_at: string;
+};
+
+type CheckinAnswerRow = {
+  id: string;
+  entry_id: string;
+  template_id: string;
+  question_snapshot: string;
+  answer: string | null;
+  position: number;
+};
+
 const SESSION_COOKIE = "cybernotes_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
 const encoder = new TextEncoder();
@@ -141,6 +169,14 @@ function jsonError(c: Context<AppEnv>, status: 400 | 401 | 403 | 404 | 500, mess
 
 function validateStatus(value: unknown) {
   return value === "active" || value === "completed" ? value : null;
+}
+
+function validateCheckinSession(value: unknown): CheckinSession | null {
+  return value === "morning" || value === "evening" ? value : null;
+}
+
+function validateDateString(value: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
 async function first<T>(env: Env, sql: string, ...bindings: unknown[]) {
@@ -942,6 +978,232 @@ api.delete("/people/:id", async (c) => {
   await run(c.env, "UPDATE todos SET person_id = NULL, updated_at = ? WHERE person_id = ?", nowIso(), id);
   await run(c.env, "DELETE FROM people WHERE id = ?", id);
   return c.json({ ok: true });
+});
+
+const DEFAULT_CHECKIN_QUESTIONS: Record<CheckinSession, string[]> = {
+  morning: [
+    "What is trying to surface in my mind today?",
+    "If I repeated yesterday's actions for a year, where would I end up?",
+    "What's the one thing preventing me from getting to my next level?",
+    "Why am I not working on it right now?",
+    "What gives me energy? What drains it?",
+    "What would my future self tell me about my current situation?",
+  ],
+  evening: [
+    "Gratitude",
+    "Success",
+    "Today I learned",
+    "Self love",
+    "Mental clarity",
+    "Emotional stability",
+    "Spiritual attunement",
+    "Love and connection",
+    "Shadow check-in",
+    "Letters to god",
+  ],
+};
+
+async function ensureCheckinTemplates(env: Env) {
+  const existing = await first<{ count: number }>(env, "SELECT COUNT(*) AS count FROM checkin_templates");
+  if ((existing?.count || 0) > 0) return;
+
+  const createdAt = nowIso();
+  for (const session of ["morning", "evening"] as const) {
+    for (const [index, question] of DEFAULT_CHECKIN_QUESTIONS[session].entries()) {
+      await run(
+        env,
+        "INSERT OR IGNORE INTO checkin_templates (id, session, question, position, created_at, archived_at) VALUES (?, ?, ?, ?, ?, NULL)",
+        `default-${session}-${index + 1}`,
+        session,
+        question,
+        index + 1,
+        createdAt,
+      );
+    }
+  }
+}
+
+function groupedCheckinTemplates(templates: CheckinTemplateRow[]) {
+  return {
+    morning: templates.filter((template) => template.session === "morning"),
+    evening: templates.filter((template) => template.session === "evening"),
+  };
+}
+
+async function checkinEntryPayload(env: Env, date: string, session: CheckinSession) {
+  const entry = await first<CheckinEntryRow>(
+    env,
+    "SELECT * FROM checkin_entries WHERE date = ? AND session = ?",
+    date,
+    session,
+  );
+  if (!entry) return null;
+
+  const answers = await all<CheckinAnswerRow>(
+    env,
+    "SELECT * FROM checkin_answers WHERE entry_id = ? ORDER BY position ASC",
+    entry.id,
+  );
+  return { entry, answers };
+}
+
+api.get("/checkin/templates", async (c) => {
+  await ensureCheckinTemplates(c.env);
+  const templates = await all<CheckinTemplateRow>(
+    c.env,
+    "SELECT * FROM checkin_templates WHERE archived_at IS NULL ORDER BY session, position ASC",
+  );
+  return c.json({ templates: groupedCheckinTemplates(templates) });
+});
+
+api.post("/checkin/templates", async (c) => {
+  await ensureCheckinTemplates(c.env);
+  const body = await readJson(c);
+  const session = validateCheckinSession(body.session);
+  const question = cleanString(body.question);
+  if (!session) return jsonError(c, 400, "Session must be morning or evening");
+  if (!question) return jsonError(c, 400, "Question is required");
+
+  const maxPosition = await first<{ position: number | null }>(
+    c.env,
+    "SELECT MAX(position) AS position FROM checkin_templates WHERE session = ? AND archived_at IS NULL",
+    session,
+  );
+  const requestedPosition = typeof body.position === "number" && Number.isFinite(body.position) ? body.position : null;
+  const template: CheckinTemplateRow = {
+    id: crypto.randomUUID(),
+    session,
+    question,
+    position: requestedPosition || (maxPosition?.position || 0) + 1,
+    created_at: nowIso(),
+    archived_at: null,
+  };
+
+  await run(
+    c.env,
+    "INSERT INTO checkin_templates (id, session, question, position, created_at, archived_at) VALUES (?, ?, ?, ?, ?, NULL)",
+    template.id,
+    template.session,
+    template.question,
+    template.position,
+    template.created_at,
+  );
+  return c.json({ template }, 201);
+});
+
+api.patch("/checkin/templates/:id", async (c) => {
+  const id = c.req.param("id");
+  const existing = await first<CheckinTemplateRow>(c.env, "SELECT * FROM checkin_templates WHERE id = ?", id);
+  if (!existing) return jsonError(c, 404, "Check-in question not found");
+
+  const body = await readJson(c);
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  if (hasOwn(body, "question")) {
+    const question = cleanString(body.question);
+    if (!question) return jsonError(c, 400, "Question cannot be empty");
+    sets.push("question = ?");
+    values.push(question);
+  }
+  if (hasOwn(body, "position")) {
+    const position = Number(body.position);
+    if (!Number.isInteger(position) || position < 1) return jsonError(c, 400, "Position must be a positive integer");
+    sets.push("position = ?");
+    values.push(position);
+  }
+
+  if (!sets.length) return c.json({ template: existing });
+  values.push(id);
+  await run(c.env, `UPDATE checkin_templates SET ${sets.join(", ")} WHERE id = ?`, ...values);
+  const template = await first<CheckinTemplateRow>(c.env, "SELECT * FROM checkin_templates WHERE id = ?", id);
+  return c.json({ template });
+});
+
+api.delete("/checkin/templates/:id", async (c) => {
+  const id = c.req.param("id");
+  const existing = await first<CheckinTemplateRow>(c.env, "SELECT * FROM checkin_templates WHERE id = ?", id);
+  if (!existing) return jsonError(c, 404, "Check-in question not found");
+  await run(c.env, "UPDATE checkin_templates SET archived_at = ? WHERE id = ?", nowIso(), id);
+  return c.json({ ok: true });
+});
+
+api.get("/checkin/entries", async (c) => {
+  const dates = await all<{ date: string; sessions: string }>(
+    c.env,
+    "SELECT date, GROUP_CONCAT(session) AS sessions FROM checkin_entries GROUP BY date ORDER BY date DESC LIMIT 90",
+  );
+  return c.json({ dates });
+});
+
+api.get("/checkin/entries/:date", async (c) => {
+  await ensureCheckinTemplates(c.env);
+  const date = c.req.param("date");
+  if (!validateDateString(date)) return jsonError(c, 400, "Date must be YYYY-MM-DD");
+
+  return c.json({
+    date,
+    entries: {
+      morning: await checkinEntryPayload(c.env, date, "morning"),
+      evening: await checkinEntryPayload(c.env, date, "evening"),
+    },
+  });
+});
+
+api.post("/checkin/entries", async (c) => {
+  await ensureCheckinTemplates(c.env);
+  const body = await readJson(c);
+  const date = cleanString(body.date);
+  const session = validateCheckinSession(body.session);
+  if (!date || !validateDateString(date)) return jsonError(c, 400, "Date must be YYYY-MM-DD");
+  if (!session) return jsonError(c, 400, "Session must be morning or evening");
+  if (!Array.isArray(body.answers)) return jsonError(c, 400, "Answers are required");
+
+  const timestamp = nowIso();
+  let entry = await first<CheckinEntryRow>(
+    c.env,
+    "SELECT * FROM checkin_entries WHERE date = ? AND session = ?",
+    date,
+    session,
+  );
+
+  if (!entry) {
+    entry = { id: crypto.randomUUID(), date, session, created_at: timestamp, updated_at: timestamp };
+    await run(
+      c.env,
+      "INSERT INTO checkin_entries (id, date, session, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+      entry.id,
+      entry.date,
+      entry.session,
+      entry.created_at,
+      entry.updated_at,
+    );
+  } else {
+    await run(c.env, "UPDATE checkin_entries SET updated_at = ? WHERE id = ?", timestamp, entry.id);
+    entry = { ...entry, updated_at: timestamp };
+  }
+
+  await run(c.env, "DELETE FROM checkin_answers WHERE entry_id = ?", entry.id);
+
+  for (const rawAnswer of body.answers) {
+    if (!isRecord(rawAnswer)) continue;
+    const templateId = cleanString(rawAnswer.template_id);
+    if (!templateId) continue;
+    const template = await first<CheckinTemplateRow>(c.env, "SELECT * FROM checkin_templates WHERE id = ?", templateId);
+    if (!template) return jsonError(c, 400, "A check-in template no longer exists");
+
+    await run(
+      c.env,
+      "INSERT INTO checkin_answers (id, entry_id, template_id, question_snapshot, answer, position) VALUES (?, ?, ?, ?, ?, ?)",
+      crypto.randomUUID(),
+      entry.id,
+      template.id,
+      template.question,
+      nullableString(rawAnswer.answer),
+      template.position,
+    );
+  }
+
+  return c.json({ entry: await checkinEntryPayload(c.env, date, session) });
 });
 
 function line(value: string | null | undefined) {
