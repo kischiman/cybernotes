@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS protocols (
   goal TEXT,
   intervention TEXT,
   metrics TEXT,
+  deadline TEXT,
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'completed')),
   created_at TEXT,
   updated_at TEXT
@@ -100,6 +101,7 @@ CREATE TABLE IF NOT EXISTS wins (
 
 CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
 CREATE INDEX IF NOT EXISTS idx_protocols_project_id ON protocols(project_id);
+CREATE INDEX IF NOT EXISTS idx_protocols_deadline ON protocols(deadline);
 CREATE INDEX IF NOT EXISTS idx_entries_protocol_id_created_at ON entries(protocol_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_photos_entry_id ON photos(entry_id);
 CREATE INDEX IF NOT EXISTS idx_people_project_id ON people(project_id);

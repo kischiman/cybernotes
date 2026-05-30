@@ -42,11 +42,13 @@ type Protocol = {
   goal: string | null;
   intervention: string | null;
   metrics: string | null;
+  deadline: string | null;
   status: "active" | "completed";
   created_at: string;
   updated_at: string;
   last_entry_at?: string | null;
   open_todo_count?: number;
+  project_title?: string;
 };
 
 type Photo = {
@@ -187,10 +189,33 @@ function formatDateTime(value: string | null | undefined) {
   }).format(date);
 }
 
+function formatDueDate(value: string | null | undefined) {
+  if (!value) return "";
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return value;
+  return `due ${new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(date)}`;
+}
+
+function deadlineTone(value: string | null | undefined) {
+  if (!value) return "";
+  const today = new Date(`${localDateValue()}T00:00:00`);
+  const due = new Date(`${value}T00:00:00`);
+  const diff = Math.ceil((due.getTime() - today.getTime()) / 86_400_000);
+  if (Number.isNaN(diff)) return "";
+  if (diff < 0) return "due-past";
+  if (diff <= 3) return "due-soon";
+  return "due-future";
+}
+
 function localDateTimeValue() {
   const date = new Date();
   date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
   return date.toISOString().slice(0, 16);
+}
+
+function DeadlineBadge({ value }: { value: string | null | undefined }) {
+  if (!value) return null;
+  return <span className={`due-date ${deadlineTone(value)}`}>{formatDueDate(value)}</span>;
 }
 
 function localDateValue(date = new Date()) {
@@ -232,6 +257,24 @@ function BackButton() {
       <ArrowLeft size={20} />
     </button>
   );
+}
+
+async function fetchActiveProtocolSummaries() {
+  const { projects } = await apiJson<{ projects: Project[] }>("/api/projects?status=active");
+  const pairs = await Promise.all(
+    projects.map(async (project) => {
+      const { protocols } = await apiJson<{ protocols: Protocol[] }>(`/api/projects/${project.id}/protocols`);
+      return protocols
+        .filter((protocol) => protocol.status === "active")
+        .map((protocol) => ({ ...protocol, project_title: project.title }));
+    }),
+  );
+  return pairs.flat().sort((left, right) => {
+    if (!left.deadline && !right.deadline) return left.title.localeCompare(right.title);
+    if (!left.deadline) return 1;
+    if (!right.deadline) return -1;
+    return left.deadline.localeCompare(right.deadline);
+  });
 }
 
 function App() {
@@ -352,9 +395,13 @@ function Dashboard() {
                   <NavLink className="protocol-row" key={protocol.id} to={`/protocols/${protocol.id}`}>
                     <div>
                       <strong>{protocol.title}</strong>
+                      <span>{project.title}</span>
                       <span>{formatDateTime(protocol.last_entry_at)}</span>
                     </div>
-                    <small>{protocol.open_todo_count || 0} open</small>
+                    <div className="protocol-row-meta">
+                      <DeadlineBadge value={protocol.deadline} />
+                      <small>{protocol.open_todo_count || 0} open</small>
+                    </div>
                   </NavLink>
                 ))}
                 {!protocolsByProject[project.id]?.length ? <p className="muted">No protocols yet.</p> : null}
@@ -382,6 +429,7 @@ function TodayScreen() {
   const [entries, setEntries] = useState<CheckinEntriesBySession>(EMPTY_CHECKIN_ENTRIES);
   const [answers, setAnswers] = useState<Record<CheckinSession, Record<string, string>>>({ morning: {}, evening: {} });
   const [dates, setDates] = useState<Array<{ date: string; sessions: string }>>([]);
+  const [activeProtocols, setActiveProtocols] = useState<Protocol[]>([]);
   const [openSession, setOpenSession] = useState<CheckinSession>("morning");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [datesOpen, setDatesOpen] = useState(false);
@@ -392,10 +440,11 @@ function TodayScreen() {
     setLoading(true);
     setError(null);
     try {
-      const [templateData, entryData, dateData] = await Promise.all([
+      const [templateData, entryData, dateData, protocolData] = await Promise.all([
         apiJson<{ templates: CheckinTemplatesBySession }>("/api/checkin/templates"),
         apiJson<{ entries: CheckinEntriesBySession }>(`/api/checkin/entries/${date}`),
         apiJson<{ dates: Array<{ date: string; sessions: string }> }>("/api/checkin/entries"),
+        fetchActiveProtocolSummaries(),
       ]);
       setTemplates(templateData.templates);
       setEntries(entryData.entries);
@@ -404,6 +453,7 @@ function TodayScreen() {
         evening: answerMap(entryData.entries.evening),
       });
       setDates(dateData.dates);
+      setActiveProtocols(protocolData);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Could not load check-in");
     } finally {
@@ -494,6 +544,24 @@ function TodayScreen() {
           />
         ))}
       </div>
+
+      <section className="section-block">
+        <div className="section-heading">
+          <h2>Active Protocols</h2>
+        </div>
+        {!activeProtocols.length ? <Empty>No active protocols.</Empty> : null}
+        <div className="stack compact-stack">
+          {activeProtocols.map((protocol) => (
+            <NavLink className="protocol-summary-row" to={`/protocols/${protocol.id}`} key={protocol.id}>
+              <div>
+                <strong>{protocol.title}</strong>
+                <span>{protocol.project_title}</span>
+              </div>
+              <DeadlineBadge value={protocol.deadline} />
+            </NavLink>
+          ))}
+        </div>
+      </section>
 
       {datesOpen ? (
         <div className="sheet-backdrop">
@@ -1059,6 +1127,7 @@ function ProjectScreen({ readOnly = false }: { readOnly?: boolean }) {
                 <div>
                   <h3>{protocol.title}</h3>
                   {protocol.goal ? <p>{protocol.goal}</p> : null}
+                  <DeadlineBadge value={protocol.deadline} />
                 </div>
                 <ClipboardList size={20} />
               </NavLink>
@@ -1135,6 +1204,7 @@ function ProtocolForm() {
   const [goal, setGoal] = useState("");
   const [intervention, setIntervention] = useState("");
   const [metrics, setMetrics] = useState("");
+  const [deadline, setDeadline] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   async function submit(event: React.FormEvent) {
@@ -1143,7 +1213,7 @@ function ProtocolForm() {
     try {
       const { protocol } = await apiJson<{ protocol: Protocol }>(`/api/projects/${projectId}/protocols`, {
         method: "POST",
-        body: JSON.stringify({ title, goal, intervention, metrics }),
+        body: JSON.stringify({ title, goal, intervention, metrics, deadline }),
       });
       navigate(`/protocols/${protocol.id}`);
     } catch (submitError) {
@@ -1174,6 +1244,10 @@ function ProtocolForm() {
         <label>
           Metrics
           <textarea value={metrics} onChange={(event) => setMetrics(event.target.value)} rows={4} />
+        </label>
+        <label>
+          Deadline
+          <input type="date" value={deadline} onChange={(event) => setDeadline(event.target.value)} />
         </label>
         <IconButton className="primary" type="submit" icon={<Check size={18} />}>
           Create
@@ -1261,6 +1335,7 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
         {protocol.goal ? <Detail label="Goal" value={protocol.goal} /> : null}
         {protocol.intervention ? <Detail label="Intervention" value={protocol.intervention} /> : null}
         {protocol.metrics ? <Detail label="Metrics" value={protocol.metrics} /> : null}
+        {protocol.deadline ? <Detail label="Deadline" value={formatDueDate(protocol.deadline)} /> : null}
       </div>
 
       <section className="section-block">

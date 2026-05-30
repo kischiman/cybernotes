@@ -227,6 +227,49 @@ h3 {
   color: var(--muted);
 }
 
+.protocol-row-meta {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+}
+
+.protocol-summary-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  border: 1px solid #000;
+  background: #fff;
+  padding: 12px;
+}
+
+.protocol-summary-row div {
+  display: grid;
+  gap: 2px;
+}
+
+.protocol-summary-row span {
+  color: var(--muted);
+}
+
+.due-date {
+  display: inline-flex;
+  width: fit-content;
+  color: var(--accent);
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.due-soon {
+  color: #9a6200;
+}
+
+.due-past {
+  color: var(--danger);
+}
+
 .button,
 .icon-only {
   min-height: 44px;

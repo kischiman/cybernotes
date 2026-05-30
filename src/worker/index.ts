@@ -33,6 +33,7 @@ type ProtocolRow = {
   goal: string | null;
   intervention: string | null;
   metrics: string | null;
+  deadline: string | null;
   status: "active" | "completed";
   created_at: string;
   updated_at: string;
@@ -552,6 +553,7 @@ api.post("/projects/:id/protocols", async (c) => {
     goal: nullableString(body.goal),
     intervention: nullableString(body.intervention),
     metrics: nullableString(body.metrics),
+    deadline: nullableString(body.deadline),
     status: "active",
     created_at: timestamp,
     updated_at: timestamp,
@@ -559,13 +561,14 @@ api.post("/projects/:id/protocols", async (c) => {
 
   await run(
     c.env,
-    "INSERT INTO protocols (id, project_id, title, goal, intervention, metrics, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO protocols (id, project_id, title, goal, intervention, metrics, deadline, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     protocol.id,
     protocol.project_id,
     protocol.title,
     protocol.goal,
     protocol.intervention,
     protocol.metrics,
+    protocol.deadline,
     protocol.status,
     protocol.created_at,
     protocol.updated_at,
@@ -593,7 +596,7 @@ api.patch("/protocols/:id", async (c) => {
     sets.push("title = ?");
     values.push(title);
   }
-  for (const field of ["goal", "intervention", "metrics"] as const) {
+  for (const field of ["goal", "intervention", "metrics", "deadline"] as const) {
     if (hasOwn(body, field)) {
       sets.push(`${field} = ?`);
       values.push(nullableString(body[field]));
@@ -1346,6 +1349,7 @@ api.get("/projects/:id/export", async (c) => {
     parts.push(`Goal: ${line(protocol.goal)}`);
     parts.push(`Intervention: ${line(protocol.intervention)}`);
     parts.push(`Metrics: ${line(protocol.metrics)}`);
+    parts.push(`Deadline: ${line(protocol.deadline)}`);
     parts.push("");
     parts.push("### Entries");
 
