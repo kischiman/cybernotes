@@ -76,7 +76,12 @@ type Todo = {
   done: 0 | 1;
   due_date: string | null;
   person_id: string | null;
+  position: number | null;
   person_name?: string | null;
+  person_role?: string | null;
+  project_id?: string;
+  project_title?: string;
+  protocol_title?: string;
   created_at: string;
   updated_at: string;
 };
@@ -326,8 +331,12 @@ function BottomNav() {
 }
 
 function Dashboard() {
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [protocolsByProject, setProtocolsByProject] = useState<Record<string, Protocol[]>>({});
+  const [todos, setTodos] = useState<Todo[]>([]);
+  const [completedToday, setCompletedToday] = useState<Todo[]>([]);
+  const [activeProtocols, setActiveProtocols] = useState<Protocol[]>([]);
+  const [draggingTodoId, setDraggingTodoId] = useState<string | null>(null);
+  const [completingTodoIds, setCompletingTodoIds] = useState<string[]>([]);
+  const [completedOpen, setCompletedOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -335,15 +344,13 @@ function Dashboard() {
     setLoading(true);
     setError(null);
     try {
-      const { projects: nextProjects } = await apiJson<{ projects: Project[] }>("/api/projects?status=active");
-      const protocolPairs = await Promise.all(
-        nextProjects.map(async (project) => {
-          const { protocols } = await apiJson<{ protocols: Protocol[] }>(`/api/projects/${project.id}/protocols`);
-          return [project.id, protocols] as const;
-        }),
-      );
-      setProjects(nextProjects);
-      setProtocolsByProject(Object.fromEntries(protocolPairs));
+      const [todoData, protocolData] = await Promise.all([
+        apiJson<{ todos: Todo[]; completed_today: Todo[] }>("/api/todos"),
+        fetchActiveProtocolSummaries(),
+      ]);
+      setTodos(todoData.todos);
+      setCompletedToday(todoData.completed_today);
+      setActiveProtocols(protocolData);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Could not load dashboard");
     } finally {
@@ -354,6 +361,48 @@ function Dashboard() {
   useEffect(() => {
     void load();
   }, []);
+
+  async function reorderTodo(targetId: string) {
+    if (!draggingTodoId || draggingTodoId === targetId) return;
+    const currentIndex = todos.findIndex((todo) => todo.id === draggingTodoId);
+    const targetIndex = todos.findIndex((todo) => todo.id === targetId);
+    if (currentIndex === -1 || targetIndex === -1) return;
+
+    const nextTodos = [...todos];
+    const [moved] = nextTodos.splice(currentIndex, 1);
+    nextTodos.splice(targetIndex, 0, moved);
+    setTodos(nextTodos);
+    setDraggingTodoId(null);
+
+    try {
+      await apiJson("/api/todos/reorder", {
+        method: "PATCH",
+        body: JSON.stringify({ ids: nextTodos.map((todo) => todo.id) }),
+      });
+    } catch (reorderError) {
+      setError(reorderError instanceof Error ? reorderError.message : "Could not reorder to-dos");
+      await load();
+    }
+  }
+
+  async function completeTodo(todo: Todo) {
+    setCompletingTodoIds((ids) => [...ids, todo.id]);
+    window.setTimeout(() => {
+      setTodos((current) => current.filter((item) => item.id !== todo.id));
+    }, 150);
+
+    try {
+      await apiJson(`/api/todos/${todo.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ done: 1 }),
+      });
+      await load();
+    } catch (toggleError) {
+      setError(toggleError instanceof Error ? toggleError.message : "Could not update to-do");
+      setCompletingTodoIds((ids) => ids.filter((id) => id !== todo.id));
+      await load();
+    }
+  }
 
   if (loading) return <Loading />;
 
@@ -379,38 +428,117 @@ function Dashboard() {
           <span>Wins</span>
         </NavLink>
       </div>
-      {!projects.length ? (
-        <Empty>No active projects.</Empty>
-      ) : (
-        <div className="stack">
-          {projects.map((project) => (
-            <article className="card" key={project.id}>
-              <NavLink className="card-link" to={`/projects/${project.id}`}>
-                <h2>{project.title}</h2>
-                {project.goal ? <p>{project.goal}</p> : null}
-                <p className="meta">Started {formatDate(project.started_at)}</p>
-              </NavLink>
-              <div className="protocol-list">
-                {(protocolsByProject[project.id] || []).map((protocol) => (
-                  <NavLink className="protocol-row" key={protocol.id} to={`/protocols/${protocol.id}`}>
-                    <div>
-                      <strong>{protocol.title}</strong>
-                      <span>{project.title}</span>
-                      <span>{formatDateTime(protocol.last_entry_at)}</span>
-                    </div>
-                    <div className="protocol-row-meta">
-                      <DeadlineBadge value={protocol.deadline} />
-                      <small>{protocol.open_todo_count || 0} open</small>
-                    </div>
-                  </NavLink>
-                ))}
-                {!protocolsByProject[project.id]?.length ? <p className="muted">No protocols yet.</p> : null}
-              </div>
-            </article>
+
+      <section className="dashboard-first">
+        <div className="section-heading">
+          <h2>Priority To-dos</h2>
+          <span className="meta">{todos.length} open</span>
+        </div>
+        {!todos.length ? <Empty>No open to-dos across active projects.</Empty> : null}
+        <div className="todo-priority-list">
+          {todos.map((todo) => (
+            <DashboardTodoItem
+              completing={completingTodoIds.includes(todo.id)}
+              key={todo.id}
+              onDragEnd={() => setDraggingTodoId(null)}
+              onDragStart={() => setDraggingTodoId(todo.id)}
+              onDrop={() => reorderTodo(todo.id)}
+              onToggle={() => completeTodo(todo)}
+              todo={todo}
+            />
           ))}
         </div>
-      )}
+      </section>
+
+      <section className="section-block">
+        <button className="completed-toggle" type="button" onClick={() => setCompletedOpen((open) => !open)}>
+          <strong>Completed today</strong>
+          <span className="meta">{completedToday.length}</span>
+          <ChevronDown className={completedOpen ? "rotate" : ""} size={20} />
+        </button>
+        {completedOpen ? (
+          <div className="todo-priority-list completed-list">
+            {completedToday.length ? (
+              completedToday.map((todo) => <DashboardTodoItem completing={false} key={todo.id} todo={todo} />)
+            ) : (
+              <Empty>Nothing completed today yet.</Empty>
+            )}
+          </div>
+        ) : null}
+      </section>
+
+      <section className="section-block">
+        <div className="section-heading">
+          <h2>Active Protocols</h2>
+          <span className="meta">{activeProtocols.length}</span>
+        </div>
+        <div className="compact-stack stack">
+          {activeProtocols.map((protocol) => (
+            <NavLink className="protocol-summary-row" key={protocol.id} to={`/protocols/${protocol.id}`}>
+              <div>
+                <strong>{protocol.title}</strong>
+                <span>{protocol.project_title}</span>
+              </div>
+              <DeadlineBadge value={protocol.deadline} />
+            </NavLink>
+          ))}
+          {!activeProtocols.length ? <Empty>No active protocols.</Empty> : null}
+        </div>
+      </section>
     </section>
+  );
+}
+
+function TodoPersonBadge({ todo }: { todo: Todo }) {
+  if (!todo.person_name) return null;
+  return <em className="person-role-badge">{todo.person_role ? `[${todo.person_role}] ` : ""}{todo.person_name}</em>;
+}
+
+function DashboardTodoItem({
+  completing,
+  onDragEnd,
+  onDragStart,
+  onDrop,
+  onToggle,
+  todo,
+}: {
+  completing: boolean;
+  onDragEnd?: () => void;
+  onDragStart?: () => void;
+  onDrop?: () => void;
+  onToggle?: () => void;
+  todo: Todo;
+}) {
+  return (
+    <article
+      className={`dashboard-todo ${todo.done ? "done" : ""} ${completing ? "is-completing" : ""}`}
+      draggable={Boolean(onDragStart)}
+      onDragEnd={onDragEnd}
+      onDragOver={(event) => {
+        if (onDrop) event.preventDefault();
+      }}
+      onDragStart={onDragStart}
+      onDrop={onDrop}
+    >
+      {onDragStart ? <GripVertical className="drag-token" size={18} /> : <span />}
+      <input
+        aria-label={`Mark ${todo.body} complete`}
+        checked={Boolean(todo.done)}
+        disabled={!onToggle}
+        onChange={onToggle}
+        type="checkbox"
+      />
+      <div>
+        <strong>{todo.body}</strong>
+        <span>
+          {[todo.project_title, todo.protocol_title].filter(Boolean).join(" / ")}
+        </span>
+        <div className="todo-meta-row">
+          <DeadlineBadge value={todo.due_date} />
+          <TodoPersonBadge todo={todo} />
+        </div>
+      </div>
+    </article>
   );
 }
 

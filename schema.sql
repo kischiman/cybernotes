@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS todos (
   done INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
   due_date TEXT,
   person_id TEXT REFERENCES people(id) ON DELETE SET NULL,
+  position INTEGER,
   created_at TEXT,
   updated_at TEXT
 );
@@ -106,6 +107,7 @@ CREATE INDEX IF NOT EXISTS idx_entries_protocol_id_created_at ON entries(protoco
 CREATE INDEX IF NOT EXISTS idx_photos_entry_id ON photos(entry_id);
 CREATE INDEX IF NOT EXISTS idx_people_project_id ON people(project_id);
 CREATE INDEX IF NOT EXISTS idx_todos_protocol_id_done ON todos(protocol_id, done);
+CREATE INDEX IF NOT EXISTS idx_todos_position ON todos(position);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_checkin_entries_date_session ON checkin_entries(date, session);
 CREATE INDEX IF NOT EXISTS idx_checkin_templates_session_position ON checkin_templates(session, position);
 CREATE INDEX IF NOT EXISTS idx_checkin_answers_entry_id_position ON checkin_answers(entry_id, position);

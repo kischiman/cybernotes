@@ -64,7 +64,12 @@ type TodoRow = {
   done: 0 | 1;
   due_date: string | null;
   person_id: string | null;
+  position: number | null;
   person_name?: string | null;
+  project_id?: string;
+  project_title?: string;
+  protocol_title?: string;
+  person_role?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -795,6 +800,38 @@ api.delete("/photos/:id", async (c) => {
   return c.json({ ok: true });
 });
 
+api.get("/todos", async (c) => {
+  const today = c.req.query("date") || todayDate();
+  const openTodos = await all<TodoRow>(
+    c.env,
+    `SELECT todos.*, people.name AS person_name, NULL AS person_role,
+      protocols.title AS protocol_title,
+      protocols.project_id AS project_id,
+      projects.title AS project_title
+     FROM todos
+     JOIN protocols ON protocols.id = todos.protocol_id
+     JOIN projects ON projects.id = protocols.project_id
+     LEFT JOIN people ON people.id = todos.person_id
+     WHERE todos.done = 0 AND projects.status = 'active'
+     ORDER BY COALESCE(todos.position, todos.rowid) ASC, datetime(todos.created_at) ASC`,
+  );
+  const completedToday = await all<TodoRow>(
+    c.env,
+    `SELECT todos.*, people.name AS person_name, NULL AS person_role,
+      protocols.title AS protocol_title,
+      protocols.project_id AS project_id,
+      projects.title AS project_title
+     FROM todos
+     JOIN protocols ON protocols.id = todos.protocol_id
+     JOIN projects ON projects.id = protocols.project_id
+     LEFT JOIN people ON people.id = todos.person_id
+     WHERE todos.done = 1 AND projects.status = 'active' AND substr(todos.updated_at, 1, 10) = ?
+     ORDER BY datetime(todos.updated_at) DESC`,
+    today,
+  );
+  return c.json({ todos: openTodos, completed_today: completedToday });
+});
+
 api.get("/protocols/:id/todos", async (c) => {
   const protocolId = c.req.param("id");
   const protocol = await first<ProtocolRow>(c.env, "SELECT * FROM protocols WHERE id = ?", protocolId);
@@ -806,7 +843,7 @@ api.get("/protocols/:id/todos", async (c) => {
      FROM todos
      LEFT JOIN people ON people.id = todos.person_id
      WHERE todos.protocol_id = ?
-     ORDER BY todos.done ASC, COALESCE(todos.due_date, '') ASC, datetime(todos.created_at) DESC`,
+     ORDER BY todos.done ASC, COALESCE(todos.position, todos.rowid) ASC, COALESCE(todos.due_date, '') ASC, datetime(todos.created_at) DESC`,
     protocolId,
   );
   return c.json({ todos });
@@ -841,6 +878,7 @@ api.post("/protocols/:id/todos", async (c) => {
   if (!(await validPersonForProtocol(c.env, protocolId, personId))) return jsonError(c, 400, "Person does not belong to this project");
 
   const timestamp = nowIso();
+  const maxPosition = await first<{ position: number | null }>(c.env, "SELECT MAX(position) AS position FROM todos");
   const todo: TodoRow = {
     id: crypto.randomUUID(),
     protocol_id: protocolId,
@@ -848,23 +886,35 @@ api.post("/protocols/:id/todos", async (c) => {
     done: body.done === true || body.done === 1 ? 1 : 0,
     due_date: nullableString(body.due_date),
     person_id: personId,
+    position: (maxPosition?.position || 0) + 1,
     created_at: timestamp,
     updated_at: timestamp,
   };
 
   await run(
     c.env,
-    "INSERT INTO todos (id, protocol_id, body, done, due_date, person_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO todos (id, protocol_id, body, done, due_date, person_id, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     todo.id,
     todo.protocol_id,
     todo.body,
     todo.done,
     todo.due_date,
     todo.person_id,
+    todo.position,
     todo.created_at,
     todo.updated_at,
   );
   return c.json({ todo }, 201);
+});
+
+api.patch("/todos/reorder", async (c) => {
+  const body = await readJson(c);
+  if (!Array.isArray(body.ids)) return jsonError(c, 400, "ids must be an array");
+  const ids = body.ids.filter((id): id is string => typeof id === "string");
+  for (const [index, id] of ids.entries()) {
+    await run(c.env, "UPDATE todos SET position = ?, updated_at = ? WHERE id = ?", index + 1, nowIso(), id);
+  }
+  return c.json({ ok: true });
 });
 
 api.patch("/todos/:id", async (c) => {

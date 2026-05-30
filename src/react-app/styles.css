@@ -440,6 +440,103 @@ a:focus-visible {
   gap: 8px;
 }
 
+.dashboard-first {
+  margin-top: 8px;
+}
+
+.todo-priority-list {
+  display: grid;
+  gap: 8px;
+}
+
+.dashboard-todo {
+  display: grid;
+  grid-template-columns: 28px 44px 1fr;
+  align-items: start;
+  gap: 8px;
+  min-height: 64px;
+  border: 1px solid #000;
+  background: #fff;
+  padding: 10px 12px 10px 4px;
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.dashboard-todo input {
+  width: 44px;
+  min-height: 44px;
+  margin: 0;
+}
+
+.dashboard-todo > div {
+  display: grid;
+  gap: 4px;
+  padding-top: 3px;
+}
+
+.dashboard-todo span {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.dashboard-todo.done strong {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.dashboard-todo.is-completing {
+  opacity: 0;
+  transform: translateX(12px);
+}
+
+.drag-token {
+  margin-top: 13px;
+  color: var(--muted);
+  cursor: grab;
+}
+
+.todo-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.person-role-badge {
+  width: fit-content;
+  border: 1px solid #000;
+  background: #eee;
+  color: #000;
+  padding: 2px 6px;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  font-style: normal;
+  line-height: 1.4;
+}
+
+.completed-toggle {
+  display: grid;
+  grid-template-columns: 1fr auto 24px;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  border: 1px solid #000;
+  background: #fff;
+  padding: 10px 12px;
+  color: #000;
+  text-align: left;
+}
+
+.completed-list {
+  margin-top: 8px;
+}
+
+.completed-list .dashboard-todo {
+  opacity: 0.75;
+}
+
 .todo {
   display: grid;
   grid-template-columns: 44px 1fr;
