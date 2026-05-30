@@ -1,0 +1,6 @@
+ALLOWED_EMAIL="you@example.com"
+SESSION_SECRET="replace-with-a-long-random-secret"
+GOOGLE_CLIENT_ID=""
+GOOGLE_CLIENT_SECRET=""
+R2_PUBLIC_BASE_URL=""
+DEV_AUTH_BYPASS="true"

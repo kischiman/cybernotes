@@ -1,0 +1,20 @@
+name = "cybernotes"
+compatibility_date = "2026-05-29"
+main = "./src/worker/index.ts"
+
+[assets]
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/auth/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cybernotes"
+database_id = "b5f919be-78e8-42e3-8073-8e04e62cd1d5"
+
+[[r2_buckets]]
+binding = "PHOTOS"
+bucket_name = "cybernotes-photos"
+
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "723f697784d44a78bf433f417d133964"

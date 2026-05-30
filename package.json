@@ -1,0 +1,32 @@
+{
+  "name": "cybernotes",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "deploy": "npm run build && wrangler deploy",
+    "db:apply:local": "wrangler d1 execute cybernotes --local --file schema.sql",
+    "db:apply:remote": "wrangler d1 execute cybernotes --remote --file schema.sql",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "hono": "^4.10.7",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router-dom": "^7.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.15.2",
+    "@cloudflare/workers-types": "^4.20260521.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.0",
+    "wrangler": "^4.18.0"
+  }
+}
