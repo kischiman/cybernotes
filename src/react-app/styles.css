@@ -270,6 +270,120 @@ h3 {
   color: var(--danger);
 }
 
+.gantt-scroll {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid #000;
+  background: #fff;
+}
+
+.gantt-chart {
+  position: relative;
+  min-width: 100%;
+}
+
+.gantt-header {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: grid;
+  height: 36px;
+  border-bottom: 1px solid #000;
+  background: #fff;
+}
+
+.gantt-day {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-right: 1px solid #e0e0e0;
+  color: var(--muted);
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.69rem;
+}
+
+.gantt-day.today,
+.gantt-column.today {
+  background: rgba(0, 102, 255, 0.08);
+}
+
+.gantt-body {
+  position: relative;
+}
+
+.gantt-today-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 3;
+  width: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.gantt-group {
+  display: grid;
+}
+
+.gantt-project-row {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  border-left: 4px solid var(--accent);
+  border-bottom: 1px solid #000;
+  padding: 0 10px;
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.gantt-row {
+  position: relative;
+  height: 48px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.gantt-row-columns {
+  position: absolute;
+  inset: 0;
+  display: grid;
+}
+
+.gantt-column {
+  border-right: 1px solid #f0f0f0;
+}
+
+.gantt-bar {
+  position: absolute;
+  top: 8px;
+  z-index: 2;
+  display: flex;
+  height: 32px;
+  align-items: center;
+  min-width: 16px;
+  overflow: hidden;
+  padding: 0 8px;
+  color: #fff;
+  font-size: 0.81rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.gantt-bar-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gantt-start-arrow {
+  flex: 0 0 auto;
+  margin-right: 4px;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 800;
+}
+
 .button,
 .icon-only {
   min-height: 44px;

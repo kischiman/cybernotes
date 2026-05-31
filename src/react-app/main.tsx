@@ -67,6 +67,7 @@ type Protocol = {
   last_entry_at?: string | null;
   open_todo_count?: number;
   project_title?: string;
+  project_started_at?: string | null;
 };
 
 type Photo = {
@@ -167,6 +168,9 @@ function roleLabel(value: string | null | undefined) {
   return RASCI_ROLES.find((role) => role.value === value)?.label || "";
 }
 
+const GANTT_PROJECT_COLORS = ["#0066FF", "#00A36C", "#E85D04", "#7B2FBE", "#C9184A", "#0096C7", "#606C38", "#AE2012"];
+const GANTT_DAY_WIDTH = 60;
+
 async function apiJson<T>(path: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
   if (!(init.body instanceof FormData) && init.body && !headers.has("content-type")) {
@@ -259,6 +263,52 @@ function localDateValue(date = new Date()) {
   return copy.toISOString().slice(0, 10);
 }
 
+function dateOnly(value: string | null | undefined) {
+  return value ? value.slice(0, 10) : localDateValue();
+}
+
+function dateAtStart(value: string) {
+  return new Date(`${value}T00:00:00`);
+}
+
+function addDays(value: string, days: number) {
+  const date = dateAtStart(value);
+  date.setDate(date.getDate() + days);
+  return localDateValue(date);
+}
+
+function daysBetween(start: string, end: string) {
+  return Math.round((dateAtStart(end).getTime() - dateAtStart(start).getTime()) / 86_400_000);
+}
+
+function buildDateRange(start: string, end: string) {
+  const total = Math.max(0, daysBetween(start, end));
+  return Array.from({ length: total + 1 }, (_, index) => addDays(start, index));
+}
+
+function minDateString(...values: Array<string | null | undefined>) {
+  return values.filter(Boolean).map(String).sort()[0] || localDateValue();
+}
+
+function maxDateString(...values: Array<string | null | undefined>) {
+  return values.filter(Boolean).map(String).sort().at(-1) || localDateValue();
+}
+
+function formatGanttDay(value: string) {
+  const date = dateAtStart(value);
+  const weekday = new Intl.DateTimeFormat("en-US", { weekday: "short" }).format(date);
+  return `${weekday} ${date.getDate()}`;
+}
+
+function hexToRgba(hex: string, alpha: number) {
+  const value = hex.replace("#", "");
+  const numeric = Number.parseInt(value, 16);
+  const red = (numeric >> 16) & 255;
+  const green = (numeric >> 8) & 255;
+  const blue = numeric & 255;
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
 function ErrorBanner({ message }: { message: string | null }) {
   if (!message) return null;
   return <div className="error-banner">{message}</div>;
@@ -320,7 +370,7 @@ function App() {
           <Routes>
             <Route path="/" element={<TodayScreen />} />
             <Route path="/today" element={<Navigate to="/" replace />} />
-            <Route path="/protocols" element={<Dashboard />} />
+            <Route path="/protocols" element={<ProtocolsGanttScreen />} />
             <Route path="/wins" element={<WinsScreen />} />
             <Route path="/projects" element={<VisionScreen />} />
             <Route path="/vision" element={<Navigate to="/projects" replace />} />
@@ -575,6 +625,131 @@ function DashboardTodoItem({
         </div>
       </div>
     </article>
+  );
+}
+
+function ProtocolsGanttScreen() {
+  const [protocols, setProtocols] = useState<Protocol[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    apiJson<{ protocols: Protocol[] }>("/api/protocols/active")
+      .then(({ protocols: nextProtocols }) => setProtocols(nextProtocols.filter((protocol) => protocol.deadline)))
+      .catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Could not load protocols"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <Loading />;
+
+  const today = localDateValue();
+  const maxDeadline = maxDateString(...protocols.map((protocol) => protocol.deadline));
+  const endDate = maxDateString(addDays(today, 6), maxDeadline);
+  const days = buildDateRange(today, endDate);
+  const chartWidth = days.length * GANTT_DAY_WIDTH;
+  const groups = Array.from(
+    protocols.reduce((map, protocol) => {
+      const key = protocol.project_id;
+      const group = map.get(key) || {
+        color: GANTT_PROJECT_COLORS[map.size % GANTT_PROJECT_COLORS.length],
+        projectId: protocol.project_id,
+        projectTitle: protocol.project_title || "Untitled project",
+        protocols: [] as Protocol[],
+      };
+      group.protocols.push(protocol);
+      map.set(key, group);
+      return map;
+    }, new Map<string, { color: string; projectId: string; projectTitle: string; protocols: Protocol[] }>()),
+  ).map(([, group]) => group);
+
+  return (
+    <section>
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Timeline</p>
+          <h1>Protocols</h1>
+        </div>
+      </header>
+      <ErrorBanner message={error} />
+      {!protocols.length ? (
+        <Empty>No active protocols with deadlines</Empty>
+      ) : (
+        <div className="gantt-scroll" aria-label="Active protocol timeline">
+          <div className="gantt-chart" style={{ width: chartWidth }}>
+            <div className="gantt-header" style={{ gridTemplateColumns: `repeat(${days.length}, ${GANTT_DAY_WIDTH}px)` }}>
+              {days.map((day) => (
+                <div className={`gantt-day ${day === today ? "today" : ""}`} key={day}>
+                  {formatGanttDay(day)}
+                </div>
+              ))}
+            </div>
+            <div className="gantt-body">
+              <div className="gantt-today-line" style={{ left: 0 }} />
+              {groups.map((group) => (
+                <div className="gantt-group" key={group.projectId}>
+                  <div
+                    className="gantt-project-row"
+                    style={{
+                      backgroundColor: hexToRgba(group.color, 0.15),
+                      borderLeftColor: group.color,
+                      width: chartWidth,
+                    }}
+                  >
+                    {group.projectTitle}
+                  </div>
+                  {group.protocols.map((protocol) => (
+                    <GanttProtocolRow chartWidth={chartWidth} color={group.color} days={days} key={protocol.id} protocol={protocol} today={today} />
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function GanttProtocolRow({
+  chartWidth,
+  color,
+  days,
+  protocol,
+  today,
+}: {
+  chartWidth: number;
+  color: string;
+  days: string[];
+  protocol: Protocol;
+  today: string;
+}) {
+  const start = minDateString(dateOnly(protocol.created_at), dateOnly(protocol.project_started_at));
+  const deadline = dateOnly(protocol.deadline);
+  const rawStartIndex = daysBetween(today, start);
+  const leftIndex = Math.max(0, rawStartIndex);
+  const endIndex = Math.max(leftIndex, daysBetween(today, deadline));
+  const left = leftIndex * GANTT_DAY_WIDTH;
+  const width = Math.max(GANTT_DAY_WIDTH, (endIndex - leftIndex + 1) * GANTT_DAY_WIDTH);
+  const clipped = rawStartIndex < 0;
+  const canShowLabel = width >= 96;
+
+  return (
+    <div className="gantt-row" style={{ width: chartWidth }}>
+      <div className="gantt-row-columns" style={{ gridTemplateColumns: `repeat(${days.length}, ${GANTT_DAY_WIDTH}px)` }}>
+        {days.map((day) => (
+          <span className={`gantt-column ${day === today ? "today" : ""}`} key={day} />
+        ))}
+      </div>
+      <NavLink
+        aria-label={protocol.title}
+        className={`gantt-bar ${clipped ? "clipped-start" : ""}`}
+        style={{ left, width, backgroundColor: hexToRgba(color, 0.8) }}
+        to={`/protocols/${protocol.id}`}
+      >
+        {clipped ? <span className="gantt-start-arrow">←</span> : null}
+        {canShowLabel ? <span className="gantt-bar-label">{protocol.title}</span> : null}
+      </NavLink>
+    </div>
   );
 }
 
@@ -1674,7 +1849,7 @@ function ProtocolForm() {
         </label>
         <label>
           Deadline
-          <input type="date" value={deadline} onChange={(event) => setDeadline(event.target.value)} />
+          <input type="date" value={deadline} onChange={(event) => setDeadline(event.target.value)} required />
         </label>
         <IconButton className="primary" type="submit" icon={<Check size={18} />}>
           Create

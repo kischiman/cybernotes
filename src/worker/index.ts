@@ -555,6 +555,8 @@ api.post("/projects/:id/protocols", async (c) => {
   const body = await readJson(c);
   const title = cleanString(body.title);
   if (!title) return jsonError(c, 400, "Protocol title is required");
+  const deadline = nullableString(body.deadline);
+  if (!deadline) return jsonError(c, 400, "Protocol deadline is required");
 
   const timestamp = nowIso();
   const protocol: ProtocolRow = {
@@ -564,7 +566,7 @@ api.post("/projects/:id/protocols", async (c) => {
     goal: nullableString(body.goal),
     intervention: nullableString(body.intervention),
     metrics: nullableString(body.metrics),
-    deadline: nullableString(body.deadline),
+    deadline,
     status: "active",
     created_at: timestamp,
     updated_at: timestamp,
@@ -585,6 +587,20 @@ api.post("/projects/:id/protocols", async (c) => {
     protocol.updated_at,
   );
   return c.json({ protocol }, 201);
+});
+
+api.get("/protocols/active", async (c) => {
+  const protocols = await all<ProtocolRow & { project_title: string; project_started_at: string | null }>(
+    c.env,
+    `SELECT protocols.*, projects.title AS project_title, projects.started_at AS project_started_at
+     FROM protocols
+     JOIN projects ON projects.id = protocols.project_id
+     WHERE protocols.status = 'active'
+       AND projects.status = 'active'
+       AND protocols.deadline IS NOT NULL
+     ORDER BY projects.title COLLATE NOCASE ASC, datetime(protocols.created_at) ASC`,
+  );
+  return c.json({ protocols });
 });
 
 api.get("/protocols/:id", async (c) => {
@@ -609,6 +625,9 @@ api.patch("/protocols/:id", async (c) => {
   }
   for (const field of ["goal", "intervention", "metrics", "deadline"] as const) {
     if (hasOwn(body, field)) {
+      if (field === "deadline" && !nullableString(body[field])) {
+        return jsonError(c, 400, "Protocol deadline is required");
+      }
       sets.push(`${field} = ?`);
       values.push(nullableString(body[field]));
     }
