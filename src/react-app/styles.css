@@ -428,6 +428,11 @@ h3 {
   color: #fff;
 }
 
+.button.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
 .icon-only {
   display: inline-flex;
   align-items: center;
@@ -462,6 +467,50 @@ h3 {
 
 .person-main span {
   color: var(--muted);
+}
+
+.search-field {
+  margin-bottom: 18px;
+}
+
+.directory-list {
+  margin-top: 14px;
+}
+
+.directory-card {
+  display: grid;
+  gap: 12px;
+}
+
+.directory-summary {
+  display: grid;
+  gap: 4px;
+}
+
+.directory-note {
+  overflow: hidden;
+  color: var(--muted);
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.directory-projects {
+  color: var(--muted);
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.directory-expanded {
+  display: grid;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #000;
+}
+
+.directory-add-form {
+  margin-top: 28px;
 }
 
 .form {

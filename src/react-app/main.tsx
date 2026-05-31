@@ -38,6 +38,7 @@ import {
   Trash2,
   Trophy,
   UserPlus,
+  Users,
   X,
 } from "lucide-react";
 import "./styles.css";
@@ -391,6 +392,7 @@ function App() {
             <Route path="/protocols" element={<ProtocolsGanttScreen />} />
             <Route path="/wins" element={<WinsScreen />} />
             <Route path="/projects" element={<ProjectsScreen />} />
+            <Route path="/people" element={<PeopleDirectoryScreen />} />
             <Route path="/vision" element={<Navigate to="/projects" replace />} />
             <Route path="/archive" element={<ArchiveScreen />} />
             <Route path="/archive/:id" element={<ProjectScreen readOnly />} />
@@ -1981,7 +1983,7 @@ function ProjectScreen({ readOnly = false }: { readOnly?: boolean }) {
     const payload = editingPerson
       ? { name: editingPerson.name, note: editingPerson.note || "" }
       : { name: personName, note: personNote };
-    const path = editingPerson ? `/api/people/${editingPerson.id}` : `/api/projects/${id}/people`;
+    const path = editingPerson ? `/api/projects/${id}/people/${editingPerson.id}` : `/api/projects/${id}/people`;
     const method = editingPerson ? "PATCH" : "POST";
     await apiJson(path, { method, body: JSON.stringify(payload) });
     setPersonName("");
@@ -1992,7 +1994,7 @@ function ProjectScreen({ readOnly = false }: { readOnly?: boolean }) {
 
   async function removePerson(person: Person) {
     if (!window.confirm(`Remove ${person.name}?`)) return;
-    await apiJson(`/api/people/${person.id}`, { method: "DELETE" });
+    await apiJson(`/api/projects/${id}/people/${person.id}`, { method: "DELETE" });
     await load();
   }
 
@@ -2418,6 +2420,149 @@ function EntrySheet({ protocolId, onClose, onSaved }: { protocolId: string; onCl
   );
 }
 
+function PeopleDirectoryScreen() {
+  const [people, setPeople] = useState<DirectoryPerson[]>([]);
+  const [search, setSearch] = useState("");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [draftName, setDraftName] = useState("");
+  const [draftNote, setDraftNote] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newNote, setNewNote] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load() {
+    setLoading(true);
+    setError(null);
+    try {
+      const { people: nextPeople } = await apiJson<{ people: DirectoryPerson[] }>("/api/people");
+      setPeople(nextPeople);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Could not load people");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const filteredPeople = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return people.filter((person) => !query || person.name.toLowerCase().includes(query));
+  }, [people, search]);
+
+  function togglePerson(person: DirectoryPerson) {
+    if (expandedId === person.id) {
+      setExpandedId(null);
+      return;
+    }
+    setExpandedId(person.id);
+    setDraftName(person.name);
+    setDraftNote(person.note || "");
+  }
+
+  async function savePerson(person: DirectoryPerson) {
+    await apiJson(`/api/people/${person.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name: draftName, note: draftNote }),
+    });
+    setExpandedId(null);
+    await load();
+  }
+
+  async function deletePerson(person: DirectoryPerson) {
+    if (!window.confirm(`Remove ${person.name} from the directory? They will be removed from all to-dos and projects.`)) return;
+    await apiJson(`/api/people/${person.id}`, { method: "DELETE" });
+    setExpandedId(null);
+    await load();
+  }
+
+  async function addPerson(event: React.FormEvent) {
+    event.preventDefault();
+    await apiJson("/api/people", {
+      method: "POST",
+      body: JSON.stringify({ name: newName, note: newNote }),
+    });
+    setNewName("");
+    setNewNote("");
+    await load();
+  }
+
+  if (loading) return <Loading />;
+
+  return (
+    <section>
+      <header className="topbar compact">
+        <BackButton />
+        <div>
+          <p className="eyebrow">Directory</p>
+          <h1>People</h1>
+        </div>
+      </header>
+      <ErrorBanner message={error} />
+      <label className="search-field">
+        Search
+        <input value={search} onChange={(event) => setSearch(event.target.value)} />
+      </label>
+      <div className="stack directory-list">
+        {!filteredPeople.length ? <Empty>No people found.</Empty> : null}
+        {filteredPeople.map((person) => {
+          const expanded = expandedId === person.id;
+          return (
+            <article className="card directory-card" key={person.id}>
+              <button className="unstyled directory-summary" type="button" onClick={() => togglePerson(person)}>
+                <strong>{person.name}</strong>
+                {person.note ? <span className="directory-note">{person.note}</span> : null}
+                <span className="directory-projects">{person.projects.length ? person.projects.join(", ") : "No projects"}</span>
+              </button>
+              {expanded ? (
+                <div className="directory-expanded">
+                  <label>
+                    Name
+                    <input value={draftName} onChange={(event) => setDraftName(event.target.value)} />
+                  </label>
+                  <label>
+                    Note
+                    <textarea value={draftNote} onChange={(event) => setDraftNote(event.target.value)} rows={3} />
+                  </label>
+                  <div className="detail">
+                    <span>Projects</span>
+                    <p>{person.projects.length ? person.projects.join(", ") : "No projects"}</p>
+                  </div>
+                  <div className="action-row">
+                    <IconButton className="primary" type="button" onClick={() => savePerson(person)} icon={<Check size={18} />}>
+                      Save
+                    </IconButton>
+                    <button className="button danger" type="button" onClick={() => deletePerson(person)}>
+                      <Trash2 size={18} />
+                      <span>Delete</span>
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </article>
+          );
+        })}
+      </div>
+      <form className="form inline-form directory-add-form" onSubmit={addPerson}>
+        <label>
+          Name
+          <input value={newName} onChange={(event) => setNewName(event.target.value)} required />
+        </label>
+        <label>
+          Note
+          <input value={newNote} onChange={(event) => setNewNote(event.target.value)} />
+        </label>
+        <IconButton type="submit" icon={<UserPlus size={18} />}>
+          Add person
+        </IconButton>
+      </form>
+    </section>
+  );
+}
+
 function ProjectsScreen() {
   const [body, setBody] = useState("");
   const [draft, setDraft] = useState("");
@@ -2471,10 +2616,15 @@ function ProjectsScreen() {
           <p className="eyebrow">Direction</p>
           <h1>Projects</h1>
         </div>
-        <button className="button" type="button" onClick={() => (editing ? save() : setEditing(true))}>
-          {editing ? <Check size={18} /> : <Eye size={18} />}
-          <span>{editing ? "Save" : "Edit"}</span>
-        </button>
+        <div className="small-actions">
+          <NavLink className="icon-only" to="/people" aria-label="People directory" title="People directory">
+            <Users size={20} />
+          </NavLink>
+          <button className="button" type="button" onClick={() => (editing ? save() : setEditing(true))}>
+            {editing ? <Check size={18} /> : <Eye size={18} />}
+            <span>{editing ? "Save" : "Edit"}</span>
+          </button>
+        </div>
       </header>
       <ErrorBanner message={error} />
       <section>
