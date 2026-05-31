@@ -575,7 +575,7 @@ function TodayScreen() {
   const [answers, setAnswers] = useState<Record<CheckinSession, Record<string, string>>>({ morning: {}, evening: {} });
   const [dates, setDates] = useState<Array<{ date: string; sessions: string }>>([]);
   const [activeProtocols, setActiveProtocols] = useState<Protocol[]>([]);
-  const [openSession, setOpenSession] = useState<CheckinSession>("morning");
+  const [openSession, setOpenSession] = useState<CheckinSession | null>("morning");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [datesOpen, setDatesOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -640,7 +640,7 @@ function TodayScreen() {
   function selectPastDate(date: string) {
     setSelectedDate(date);
     setDatesOpen(false);
-    setOpenSession("morning");
+    setOpenSession(null);
   }
 
   if (loading) return <Loading />;
@@ -682,7 +682,7 @@ function TodayScreen() {
             key={session}
             onAnswer={(templateId, value) => updateAnswer(session, templateId, value)}
             onSave={() => saveSession(session)}
-            onToggle={() => setOpenSession(openSession === session ? (session === "morning" ? "evening" : "morning") : session)}
+            onToggle={() => setOpenSession(openSession === session ? null : session)}
             readOnly={readOnly}
             session={session}
             templates={templates[session]}
@@ -1407,11 +1407,10 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
   const [protocol, setProtocol] = useState<Protocol | null>(null);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [todos, setTodos] = useState<Todo[]>([]);
-  const [people, setPeople] = useState<Person[]>([]);
   const [entryOpen, setEntryOpen] = useState(openEntryOnMount);
   const [todoBody, setTodoBody] = useState("");
   const [todoDue, setTodoDue] = useState("");
-  const [todoPerson, setTodoPerson] = useState("");
+  const [todoPersonName, setTodoPersonName] = useState("");
   const [todoRole, setTodoRole] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1425,11 +1424,9 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
         apiJson<{ entries: Entry[] }>(`/api/protocols/${id}/entries`),
         apiJson<{ todos: Todo[] }>(`/api/protocols/${id}/todos`),
       ]);
-      const { people: nextPeople } = await apiJson<{ people: Person[] }>(`/api/projects/${nextProtocol.project_id}/people`);
       setProtocol(nextProtocol);
       setEntries(nextEntries);
       setTodos(nextTodos);
-      setPeople(nextPeople);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Could not load protocol");
     } finally {
@@ -1453,11 +1450,11 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
     event.preventDefault();
     await apiJson(`/api/protocols/${id}/todos`, {
       method: "POST",
-      body: JSON.stringify({ body: todoBody, due_date: todoDue, person_id: todoPerson, person_role: todoRole }),
+      body: JSON.stringify({ body: todoBody, due_date: todoDue, person_name: todoPersonName, person_role: todoRole }),
     });
     setTodoBody("");
     setTodoDue("");
-    setTodoPerson("");
+    setTodoPersonName("");
     setTodoRole("");
     await load();
   }
@@ -1547,22 +1544,17 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
           </label>
           <label>
             Person
-            <select
-              value={todoPerson}
+            <input
+              autoComplete="off"
+              placeholder="Type a name"
+              value={todoPersonName}
               onChange={(event) => {
-                setTodoPerson(event.target.value);
-                if (!event.target.value) setTodoRole("");
+                setTodoPersonName(event.target.value);
+                if (!event.target.value.trim()) setTodoRole("");
               }}
-            >
-              <option value="">None</option>
-              {people.map((person) => (
-                <option value={person.id} key={person.id}>
-                  {person.name}
-                </option>
-              ))}
-            </select>
+            />
           </label>
-          {todoPerson ? (
+          {todoPersonName.trim() ? (
             <div className="field-group">
               <span className="field-label">Role</span>
               <div className="rasci-control" role="group" aria-label="RASCI role">

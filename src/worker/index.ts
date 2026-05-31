@@ -871,6 +871,40 @@ async function validPersonForProtocol(env: Env, protocolId: string, personId: st
   return Boolean(person);
 }
 
+async function findOrCreatePersonForProtocol(env: Env, protocolId: string, rawName: unknown) {
+  const name = cleanString(rawName);
+  if (!name) return null;
+
+  const protocol = await protocolProject(env, protocolId);
+  if (!protocol) return undefined;
+
+  const existing = await first<PersonRow>(
+    env,
+    "SELECT * FROM people WHERE project_id = ? AND name = ? COLLATE NOCASE ORDER BY created_at ASC LIMIT 1",
+    protocol.project_id,
+    name,
+  );
+  if (existing) return existing.id;
+
+  const person: PersonRow = {
+    id: crypto.randomUUID(),
+    project_id: protocol.project_id,
+    name,
+    note: null,
+    created_at: nowIso(),
+  };
+  await run(
+    env,
+    "INSERT INTO people (id, project_id, name, note, created_at) VALUES (?, ?, ?, ?, ?)",
+    person.id,
+    person.project_id,
+    person.name,
+    person.note,
+    person.created_at,
+  );
+  return person.id;
+}
+
 api.post("/protocols/:id/todos", async (c) => {
   const protocolId = c.req.param("id");
   const protocol = await first<ProtocolRow>(c.env, "SELECT * FROM protocols WHERE id = ?", protocolId);
@@ -880,8 +914,14 @@ api.post("/protocols/:id/todos", async (c) => {
   const todoBody = cleanString(body.body);
   if (!todoBody) return jsonError(c, 400, "To-do body is required");
 
-  const personId = nullableString(body.person_id);
-  if (!(await validPersonForProtocol(c.env, protocolId, personId))) return jsonError(c, 400, "Person does not belong to this project");
+  let personId = nullableString(body.person_id);
+  if (hasOwn(body, "person_name")) {
+    const resolvedPersonId = await findOrCreatePersonForProtocol(c.env, protocolId, body.person_name);
+    if (resolvedPersonId === undefined) return jsonError(c, 404, "Protocol not found");
+    personId = resolvedPersonId;
+  } else if (!(await validPersonForProtocol(c.env, protocolId, personId))) {
+    return jsonError(c, 400, "Person does not belong to this project");
+  }
   const personRole = validateTodoPersonRole(body.person_role);
   if (personRole === undefined) return jsonError(c, 400, "Invalid RASCI role");
 
@@ -950,7 +990,13 @@ api.patch("/todos/:id", async (c) => {
     values.push(nullableString(body.due_date));
   }
   let nextPersonId = existing.person_id;
-  if (hasOwn(body, "person_id")) {
+  if (hasOwn(body, "person_name")) {
+    const personId = await findOrCreatePersonForProtocol(c.env, existing.protocol_id, body.person_name);
+    if (personId === undefined) return jsonError(c, 404, "Protocol not found");
+    nextPersonId = personId;
+    sets.push("person_id = ?");
+    values.push(personId);
+  } else if (hasOwn(body, "person_id")) {
     const personId = nullableString(body.person_id);
     if (!(await validPersonForProtocol(c.env, existing.protocol_id, personId))) {
       return jsonError(c, 400, "Person does not belong to this project");
@@ -964,7 +1010,7 @@ api.patch("/todos/:id", async (c) => {
     if (personRole === undefined) return jsonError(c, 400, "Invalid RASCI role");
     sets.push("person_role = ?");
     values.push(nextPersonId ? personRole : null);
-  } else if (hasOwn(body, "person_id") && !nextPersonId) {
+  } else if ((hasOwn(body, "person_id") || hasOwn(body, "person_name")) && !nextPersonId) {
     sets.push("person_role = ?");
     values.push(null);
   }
