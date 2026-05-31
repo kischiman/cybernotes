@@ -192,6 +192,26 @@ h3 {
   display: block;
 }
 
+.project-expand-card {
+  padding: 0;
+}
+
+.project-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 16px;
+}
+
+.project-toggle p {
+  margin-top: 8px;
+}
+
+.project-expand-card .protocol-list {
+  margin: 0 16px 16px;
+}
+
 .row-card,
 .person-card {
   display: flex;

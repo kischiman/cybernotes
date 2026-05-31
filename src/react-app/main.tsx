@@ -372,7 +372,7 @@ function App() {
             <Route path="/today" element={<Navigate to="/" replace />} />
             <Route path="/protocols" element={<ProtocolsGanttScreen />} />
             <Route path="/wins" element={<WinsScreen />} />
-            <Route path="/projects" element={<VisionScreen />} />
+            <Route path="/projects" element={<ProjectsScreen />} />
             <Route path="/vision" element={<Navigate to="/projects" replace />} />
             <Route path="/archive" element={<ArchiveScreen />} />
             <Route path="/archive/:id" element={<ProjectScreen readOnly />} />
@@ -2149,10 +2149,12 @@ function EntrySheet({ protocolId, onClose, onSaved }: { protocolId: string; onCl
   );
 }
 
-function VisionScreen() {
+function ProjectsScreen() {
   const [body, setBody] = useState("");
   const [draft, setDraft] = useState("");
   const [projects, setProjects] = useState<Project[]>([]);
+  const [protocolsByProject, setProtocolsByProject] = useState<Record<string, Protocol[]>>({});
+  const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>([]);
   const [editing, setEditing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -2164,11 +2166,18 @@ function VisionScreen() {
         apiJson<{ body: string | null }>("/api/vision"),
         apiJson<{ projects: Project[] }>("/api/projects?status=active"),
       ]);
+      const protocolPairs = await Promise.all(
+        projectData.projects.map(async (project) => {
+          const { protocols } = await apiJson<{ protocols: Protocol[] }>(`/api/projects/${project.id}/protocols`);
+          return [project.id, protocols] as const;
+        }),
+      );
       setBody(vision.body || "");
       setDraft(vision.body || "");
       setProjects(projectData.projects);
+      setProtocolsByProject(Object.fromEntries(protocolPairs));
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Could not load vision");
+      setError(loadError instanceof Error ? loadError.message : "Could not load projects");
     } finally {
       setLoading(false);
     }
@@ -2191,7 +2200,7 @@ function VisionScreen() {
       <header className="topbar">
         <div>
           <p className="eyebrow">Direction</p>
-          <h1>Vision</h1>
+          <h1>Projects</h1>
         </div>
         <button className="button" type="button" onClick={() => (editing ? save() : setEditing(true))}>
           {editing ? <Check size={18} /> : <Eye size={18} />}
@@ -2199,13 +2208,18 @@ function VisionScreen() {
         </button>
       </header>
       <ErrorBanner message={error} />
-      {editing ? (
-        <textarea className="vision-editor" value={draft} onChange={(event) => setDraft(event.target.value)} />
-      ) : body ? (
-        <article className="vision-body">{body}</article>
-      ) : (
-        <Empty>Set your vision.</Empty>
-      )}
+      <section>
+        <div className="section-heading">
+          <h2>Vision</h2>
+        </div>
+        {editing ? (
+          <textarea className="vision-editor" value={draft} onChange={(event) => setDraft(event.target.value)} />
+        ) : body ? (
+          <article className="vision-body">{body}</article>
+        ) : (
+          <Empty>Set your vision.</Empty>
+        )}
+      </section>
 
       <section className="section-block">
         <div className="section-heading">
@@ -2217,17 +2231,58 @@ function VisionScreen() {
         ) : (
           <div className="stack">
             {projects.map((project) => (
-              <NavLink className="card row-card" key={project.id} to={`/projects/${project.id}`}>
-                <div>
-                  <h3>{project.title}</h3>
-                  {project.goal ? <p>{project.goal}</p> : null}
-                  <p className="meta">Started {formatDate(project.started_at)}</p>
-                </div>
-                <ClipboardList size={20} />
-              </NavLink>
+              <article className="card project-expand-card" key={project.id}>
+                <button
+                  className="unstyled project-toggle"
+                  type="button"
+                  onClick={() =>
+                    setExpandedProjectIds((ids) =>
+                      ids.includes(project.id) ? ids.filter((id) => id !== project.id) : [...ids, project.id],
+                    )
+                  }
+                >
+                  <div>
+                    <h3>{project.title}</h3>
+                    {project.goal ? <p>{project.goal}</p> : null}
+                    <p className="meta">Started {formatDate(project.started_at)}</p>
+                  </div>
+                  <ChevronDown className={expandedProjectIds.includes(project.id) ? "rotate" : ""} size={20} />
+                </button>
+                {expandedProjectIds.includes(project.id) ? (
+                  <div className="protocol-list">
+                    <NavLink className="protocol-row" to={`/projects/${project.id}`}>
+                      <div>
+                        <strong>Project detail</strong>
+                        <span>People, export, and controls</span>
+                      </div>
+                      <Folder size={18} />
+                    </NavLink>
+                    {(protocolsByProject[project.id] || []).map((protocol) => (
+                      <NavLink className="protocol-row" key={protocol.id} to={`/protocols/${protocol.id}`}>
+                        <div>
+                          <strong>{protocol.title}</strong>
+                          <span>{formatDateTime(protocol.last_entry_at)}</span>
+                        </div>
+                        <DeadlineBadge value={protocol.deadline} />
+                      </NavLink>
+                    ))}
+                    {!protocolsByProject[project.id]?.length ? <p className="muted">No protocols yet.</p> : null}
+                  </div>
+                ) : null}
+              </article>
             ))}
           </div>
         )}
+      </section>
+
+      <section className="section-block">
+        <NavLink className="card row-card" to="/archive">
+          <div>
+            <h2>Archive</h2>
+            <p>Completed projects</p>
+          </div>
+          <Archive size={20} />
+        </NavLink>
       </section>
     </section>
   );
