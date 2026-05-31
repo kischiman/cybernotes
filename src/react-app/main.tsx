@@ -575,7 +575,7 @@ function TodayScreen() {
   const [answers, setAnswers] = useState<Record<CheckinSession, Record<string, string>>>({ morning: {}, evening: {} });
   const [dates, setDates] = useState<Array<{ date: string; sessions: string }>>([]);
   const [activeProtocols, setActiveProtocols] = useState<Protocol[]>([]);
-  const [openSession, setOpenSession] = useState<CheckinSession | null>("morning");
+  const [openSession, setOpenSession] = useState<CheckinSession | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [datesOpen, setDatesOpen] = useState(false);
   const [loading, setLoading] = useState(true);
