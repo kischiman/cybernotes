@@ -499,10 +499,33 @@ a:focus-visible {
   transform: translateX(12px);
 }
 
+.dashboard-todo.is-dragging {
+  z-index: 2;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.today-todo {
+  touch-action: manipulation;
+}
+
 .drag-token {
   margin-top: 13px;
   color: var(--muted);
   cursor: grab;
+}
+
+.drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  min-height: 44px;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: grab;
+  touch-action: none;
 }
 
 .todo-meta-row {
@@ -518,6 +541,15 @@ a:focus-visible {
   background: #eee;
   color: #000;
   padding: 2px 6px;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  font-style: normal;
+  line-height: 1.4;
+}
+
+.todo-person-inline {
+  width: fit-content;
+  color: #000;
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.78rem;
   font-style: normal;
@@ -577,6 +609,12 @@ a:focus-visible {
 
 .completed-list .dashboard-todo {
   opacity: 0.75;
+}
+
+.add-todo-row {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 12px;
 }
 
 .todo {

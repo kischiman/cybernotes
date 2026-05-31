@@ -1,5 +1,22 @@
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { BrowserRouter, Navigate, NavLink, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import {
   Archive,
@@ -500,8 +517,11 @@ function Dashboard() {
   );
 }
 
-function TodoPersonBadge({ todo }: { todo: Todo }) {
+function TodoPersonBadge({ showRole = true, todo }: { showRole?: boolean; todo: Todo }) {
   if (!todo.person_name) return null;
+  if (!showRole) {
+    return <em className="todo-person-inline">· {todo.person_name}</em>;
+  }
   return (
     <em className="person-role-badge" title={todo.person_role ? roleLabel(todo.person_role) : undefined}>
       {todo.person_role ? `[${todo.person_role}] ` : ""}
@@ -574,21 +594,31 @@ function TodayScreen() {
   const [answers, setAnswers] = useState<Record<CheckinSession, Record<string, string>>>({ morning: {}, evening: {} });
   const [dates, setDates] = useState<Array<{ date: string; sessions: string }>>([]);
   const [activeProtocols, setActiveProtocols] = useState<Protocol[]>([]);
+  const [todos, setTodos] = useState<Todo[]>([]);
+  const [completedToday, setCompletedToday] = useState<Todo[]>([]);
+  const [completingTodoIds, setCompletingTodoIds] = useState<string[]>([]);
+  const [completedOpen, setCompletedOpen] = useState(false);
+  const [addTodoOpen, setAddTodoOpen] = useState(false);
   const [openSession, setOpenSession] = useState<CheckinSession | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [datesOpen, setDatesOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const todoSensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
 
   async function load(date = selectedDate) {
     setLoading(true);
     setError(null);
     try {
-      const [templateData, entryData, dateData, protocolData] = await Promise.all([
+      const [templateData, entryData, dateData, protocolData, todoData] = await Promise.all([
         apiJson<{ templates: CheckinTemplatesBySession }>("/api/checkin/templates"),
         apiJson<{ entries: CheckinEntriesBySession }>(`/api/checkin/entries/${date}`),
         apiJson<{ dates: Array<{ date: string; sessions: string }> }>("/api/checkin/entries"),
         fetchActiveProtocolSummaries(),
+        apiJson<{ todos: Todo[]; completed_today: Todo[] }>("/api/todos"),
       ]);
       setTemplates(templateData.templates);
       setEntries(entryData.entries);
@@ -598,6 +628,8 @@ function TodayScreen() {
       });
       setDates(dateData.dates);
       setActiveProtocols(protocolData);
+      setTodos(todoData.todos);
+      setCompletedToday(todoData.completed_today);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Could not load check-in");
     } finally {
@@ -640,6 +672,48 @@ function TodayScreen() {
     setSelectedDate(date);
     setDatesOpen(false);
     setOpenSession(null);
+  }
+
+  async function reorderTodos(event: DragEndEvent) {
+    const activeId = String(event.active.id);
+    const overId = event.over ? String(event.over.id) : null;
+    if (!overId || activeId === overId) return;
+
+    const oldIndex = todos.findIndex((todo) => todo.id === activeId);
+    const newIndex = todos.findIndex((todo) => todo.id === overId);
+    if (oldIndex === -1 || newIndex === -1) return;
+
+    const nextTodos = arrayMove(todos, oldIndex, newIndex);
+    setTodos(nextTodos);
+    try {
+      await apiJson("/api/todos/reorder", {
+        method: "PATCH",
+        body: JSON.stringify({ ids: nextTodos.map((todo) => todo.id) }),
+      });
+    } catch (reorderError) {
+      setError(reorderError instanceof Error ? reorderError.message : "Could not reorder to-dos");
+      await load(selectedDate);
+    }
+  }
+
+  async function completeTodo(todo: Todo) {
+    setCompletingTodoIds((ids) => [...ids, todo.id]);
+    window.setTimeout(() => {
+      setTodos((current) => current.filter((item) => item.id !== todo.id));
+    }, 150);
+
+    try {
+      await apiJson(`/api/todos/${todo.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ done: 1 }),
+      });
+      await load(selectedDate);
+    } catch (toggleError) {
+      setError(toggleError instanceof Error ? toggleError.message : "Could not update to-do");
+      await load(selectedDate);
+    } finally {
+      setCompletingTodoIds((ids) => ids.filter((id) => id !== todo.id));
+    }
   }
 
   if (loading) return <Loading />;
@@ -691,20 +765,46 @@ function TodayScreen() {
 
       <section className="section-block">
         <div className="section-heading">
-          <h2>Active Protocols</h2>
+          <h2>To-dos</h2>
+          <span className="meta">{todos.length} open</span>
         </div>
-        {!activeProtocols.length ? <Empty>No active protocols.</Empty> : null}
-        <div className="stack compact-stack">
-          {activeProtocols.map((protocol) => (
-            <NavLink className="protocol-summary-row" to={`/protocols/${protocol.id}`} key={protocol.id}>
-              <div>
-                <strong>{protocol.title}</strong>
-                <span>{protocol.project_title}</span>
-              </div>
-              <DeadlineBadge value={protocol.deadline} />
-            </NavLink>
-          ))}
+        {!todos.length ? <Empty>No open to-dos across active projects.</Empty> : null}
+        <DndContext sensors={todoSensors} collisionDetection={closestCenter} onDragEnd={reorderTodos}>
+          <SortableContext items={todos.map((todo) => todo.id)} strategy={verticalListSortingStrategy}>
+            <div className="todo-priority-list">
+              {todos.map((todo) => (
+                <SortableTodayTodoItem
+                  completing={completingTodoIds.includes(todo.id)}
+                  key={todo.id}
+                  onToggle={() => completeTodo(todo)}
+                  todo={todo}
+                />
+              ))}
+            </div>
+          </SortableContext>
+        </DndContext>
+        <div className="add-todo-row">
+          <IconButton type="button" onClick={() => setAddTodoOpen(true)} icon={<Plus size={18} />}>
+            Add to-do
+          </IconButton>
         </div>
+      </section>
+
+      <section className="section-block">
+        <button className="completed-toggle" type="button" onClick={() => setCompletedOpen((open) => !open)}>
+          <strong>Completed today</strong>
+          <span className="meta">{completedToday.length}</span>
+          <ChevronDown className={completedOpen ? "rotate" : ""} size={20} />
+        </button>
+        {completedOpen ? (
+          <div className="todo-priority-list completed-list">
+            {completedToday.length ? (
+              completedToday.map((todo) => <TodayTodoItem completing={false} key={todo.id} todo={todo} />)
+            ) : (
+              <Empty>Nothing completed today yet.</Empty>
+            )}
+          </div>
+        ) : null}
       </section>
 
       {datesOpen ? (
@@ -737,7 +837,190 @@ function TodayScreen() {
           templates={templates}
         />
       ) : null}
+
+      {addTodoOpen ? (
+        <AddTodoSheet
+          onClose={() => setAddTodoOpen(false)}
+          onSaved={() => load(selectedDate)}
+          protocols={activeProtocols}
+        />
+      ) : null}
     </section>
+  );
+}
+
+function TodayTodoItem({
+  completing,
+  onToggle,
+  todo,
+}: {
+  completing: boolean;
+  onToggle?: () => void;
+  todo: Todo;
+}) {
+  return (
+    <article className={`dashboard-todo today-todo ${todo.done ? "done" : ""} ${completing ? "is-completing" : ""}`}>
+      <span />
+      <input
+        aria-label={`Mark ${todo.body} complete`}
+        checked={Boolean(todo.done)}
+        disabled={!onToggle}
+        onChange={onToggle}
+        type="checkbox"
+      />
+      <div>
+        <strong>{todo.body}</strong>
+        <span>{[todo.project_title, todo.protocol_title].filter(Boolean).join(" / ")}</span>
+        <div className="todo-meta-row">
+          <DeadlineBadge value={todo.due_date} />
+          <TodoPersonBadge showRole={false} todo={todo} />
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function SortableTodayTodoItem({
+  completing,
+  onToggle,
+  todo,
+}: {
+  completing: boolean;
+  onToggle: () => void;
+  todo: Todo;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: todo.id });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <article
+      className={`dashboard-todo today-todo ${completing ? "is-completing" : ""} ${isDragging ? "is-dragging" : ""}`}
+      ref={setNodeRef}
+      style={style}
+    >
+      <button className="drag-handle" type="button" aria-label={`Reorder ${todo.body}`} {...attributes} {...listeners}>
+        <GripVertical size={18} />
+      </button>
+      <input aria-label={`Mark ${todo.body} complete`} checked={Boolean(todo.done)} onChange={onToggle} type="checkbox" />
+      <div>
+        <strong>{todo.body}</strong>
+        <span>{[todo.project_title, todo.protocol_title].filter(Boolean).join(" / ")}</span>
+        <div className="todo-meta-row">
+          <DeadlineBadge value={todo.due_date} />
+          <TodoPersonBadge showRole={false} todo={todo} />
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function AddTodoSheet({
+  onClose,
+  onSaved,
+  protocols,
+}: {
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+  protocols: Protocol[];
+}) {
+  const [protocolId, setProtocolId] = useState(protocols[0]?.id || "");
+  const [body, setBody] = useState("");
+  const [dueDate, setDueDate] = useState("");
+  const [personName, setPersonName] = useState("");
+  const [personRole, setPersonRole] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!protocolId) return;
+    setError(null);
+    try {
+      await apiJson(`/api/protocols/${protocolId}/todos`, {
+        method: "POST",
+        body: JSON.stringify({
+          body,
+          due_date: dueDate,
+          person_name: personName,
+          person_role: personRole,
+        }),
+      });
+      await onSaved();
+      onClose();
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Could not add to-do");
+    }
+  }
+
+  return (
+    <div className="sheet-backdrop">
+      <form className="sheet form" onSubmit={submit}>
+        <div className="section-heading">
+          <h2>Add to-do</h2>
+          <button type="button" className="icon-only" onClick={onClose} aria-label="Close" title="Close">
+            <X size={20} />
+          </button>
+        </div>
+        <ErrorBanner message={error} />
+        {!protocols.length ? <Empty>No active protocols.</Empty> : null}
+        <label>
+          Protocol
+          <select value={protocolId} onChange={(event) => setProtocolId(event.target.value)} required>
+            {protocols.map((protocol) => (
+              <option value={protocol.id} key={protocol.id}>
+                {protocol.project_title ? `${protocol.project_title} / ` : ""}
+                {protocol.title}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          To-do
+          <input value={body} onChange={(event) => setBody(event.target.value)} required />
+        </label>
+        <label>
+          Due
+          <input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} />
+        </label>
+        <label>
+          Person
+          <input
+            autoComplete="off"
+            placeholder="Type a name"
+            value={personName}
+            onChange={(event) => {
+              setPersonName(event.target.value);
+              if (!event.target.value.trim()) setPersonRole("");
+            }}
+          />
+        </label>
+        {personName.trim() ? (
+          <div className="field-group">
+            <span className="field-label">Role</span>
+            <div className="rasci-control" role="group" aria-label="RASCI role">
+              {RASCI_ROLES.map((role) => (
+                <button
+                  aria-pressed={personRole === role.value}
+                  className={`role-chip ${personRole === role.value ? "active" : ""}`}
+                  key={role.value}
+                  onClick={() => setPersonRole((current) => (current === role.value ? "" : role.value))}
+                  title={role.label}
+                  type="button"
+                >
+                  {role.value}
+                </button>
+              ))}
+            </div>
+            <span className="helper-text">{personRole ? roleLabel(personRole) : "Optional"}</span>
+          </div>
+        ) : null}
+        <IconButton className="primary" type="submit" disabled={!protocols.length} icon={<Check size={18} />}>
+          Save
+        </IconButton>
+      </form>
+    </div>
   );
 }
 
