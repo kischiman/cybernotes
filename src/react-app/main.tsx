@@ -1695,6 +1695,7 @@ function EntrySheet({ protocolId, onClose, onSaved }: { protocolId: string; onCl
 function VisionScreen() {
   const [body, setBody] = useState("");
   const [draft, setDraft] = useState("");
+  const [projects, setProjects] = useState<Project[]>([]);
   const [editing, setEditing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1702,9 +1703,13 @@ function VisionScreen() {
   async function load() {
     setLoading(true);
     try {
-      const vision = await apiJson<{ body: string | null }>("/api/vision");
+      const [vision, projectData] = await Promise.all([
+        apiJson<{ body: string | null }>("/api/vision"),
+        apiJson<{ projects: Project[] }>("/api/projects?status=active"),
+      ]);
       setBody(vision.body || "");
       setDraft(vision.body || "");
+      setProjects(projectData.projects);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Could not load vision");
     } finally {
@@ -1744,6 +1749,29 @@ function VisionScreen() {
       ) : (
         <Empty>Set your vision.</Empty>
       )}
+
+      <section className="section-block">
+        <div className="section-heading">
+          <h2>Projects</h2>
+          <span className="meta">{projects.length} active</span>
+        </div>
+        {!projects.length ? (
+          <Empty>No active projects.</Empty>
+        ) : (
+          <div className="stack">
+            {projects.map((project) => (
+              <NavLink className="card row-card" key={project.id} to={`/projects/${project.id}`}>
+                <div>
+                  <h3>{project.title}</h3>
+                  {project.goal ? <p>{project.goal}</p> : null}
+                  <p className="meta">Started {formatDate(project.started_at)}</p>
+                </div>
+                <ClipboardList size={20} />
+              </NavLink>
+            ))}
+          </div>
+        )}
+      </section>
     </section>
   );
 }
