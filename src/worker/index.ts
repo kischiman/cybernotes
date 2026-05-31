@@ -74,12 +74,38 @@ type TodoRow = {
   updated_at: string;
 };
 
+type TodoAssignee = {
+  assignee_id: string;
+  person_id: string;
+  name: string;
+  role: string | null;
+};
+
 type PersonRow = {
   id: string;
   project_id: string;
+  directory_id: string | null;
   name: string;
   note: string | null;
   created_at: string;
+};
+
+type DirectoryPersonRow = {
+  id: string;
+  name: string;
+  note: string | null;
+  created_at: string;
+  updated_at: string | null;
+  projects?: string[];
+};
+
+type TodoAssigneeRow = {
+  id: string;
+  todo_id: string;
+  person_id: string;
+  role: string | null;
+  created_at: string;
+  name?: string;
 };
 
 type CheckinSession = "morning" | "evening";
@@ -211,6 +237,52 @@ async function all<T>(env: Env, sql: string, ...bindings: unknown[]) {
 
 async function run(env: Env, sql: string, ...bindings: unknown[]) {
   return await env.DB.prepare(sql).bind(...bindings).run();
+}
+
+async function withTodoAssignees<T extends TodoRow>(env: Env, todos: T[]) {
+  if (!todos.length) return todos.map((todo) => ({ ...todo, assignees: [] as TodoAssignee[] }));
+  const placeholders = todos.map(() => "?").join(", ");
+  const rows = await all<TodoAssigneeRow & { name: string }>(
+    env,
+    `SELECT todo_assignees.id, todo_assignees.todo_id, todo_assignees.person_id, todo_assignees.role, todo_assignees.created_at,
+      people_directory.name
+     FROM todo_assignees
+     JOIN people_directory ON people_directory.id = todo_assignees.person_id
+     WHERE todo_assignees.todo_id IN (${placeholders})
+     ORDER BY datetime(todo_assignees.created_at) ASC`,
+    ...todos.map((todo) => todo.id),
+  );
+  const assigneesByTodo = rows.reduce<Record<string, TodoAssignee[]>>((map, row) => {
+    map[row.todo_id] ||= [];
+    map[row.todo_id].push({
+      assignee_id: row.id,
+      person_id: row.person_id,
+      name: row.name,
+      role: row.role,
+    });
+    return map;
+  }, {});
+  return todos.map((todo) => ({ ...todo, assignees: assigneesByTodo[todo.id] || [] }));
+}
+
+async function todoAssigneePayload(env: Env, id: string) {
+  const row = await first<TodoAssigneeRow & { name: string }>(
+    env,
+    `SELECT todo_assignees.id, todo_assignees.todo_id, todo_assignees.person_id, todo_assignees.role, todo_assignees.created_at,
+      people_directory.name
+     FROM todo_assignees
+     JOIN people_directory ON people_directory.id = todo_assignees.person_id
+     WHERE todo_assignees.id = ?`,
+    id,
+  );
+  return row
+    ? {
+        assignee_id: row.id,
+        person_id: row.person_id,
+        name: row.name,
+        role: row.role,
+      }
+    : null;
 }
 
 function base64Url(bytes: ArrayBuffer) {
@@ -829,32 +901,33 @@ api.get("/todos", async (c) => {
   const today = c.req.query("date") || todayDate();
   const openTodos = await all<TodoRow>(
     c.env,
-    `SELECT todos.*, people.name AS person_name,
+    `SELECT todos.*,
       protocols.title AS protocol_title,
       protocols.project_id AS project_id,
       projects.title AS project_title
      FROM todos
      JOIN protocols ON protocols.id = todos.protocol_id
      JOIN projects ON projects.id = protocols.project_id
-     LEFT JOIN people ON people.id = todos.person_id
      WHERE todos.done = 0 AND projects.status = 'active'
      ORDER BY COALESCE(todos.position, todos.rowid) ASC, datetime(todos.created_at) ASC`,
   );
   const completedToday = await all<TodoRow>(
     c.env,
-    `SELECT todos.*, people.name AS person_name,
+    `SELECT todos.*,
       protocols.title AS protocol_title,
       protocols.project_id AS project_id,
       projects.title AS project_title
      FROM todos
      JOIN protocols ON protocols.id = todos.protocol_id
      JOIN projects ON projects.id = protocols.project_id
-     LEFT JOIN people ON people.id = todos.person_id
      WHERE todos.done = 1 AND projects.status = 'active' AND substr(todos.updated_at, 1, 10) = ?
      ORDER BY datetime(todos.updated_at) DESC`,
     today,
   );
-  return c.json({ todos: openTodos, completed_today: completedToday });
+  return c.json({
+    todos: await withTodoAssignees(c.env, openTodos),
+    completed_today: await withTodoAssignees(c.env, completedToday),
+  });
 });
 
 api.get("/protocols/:id/todos", async (c) => {
@@ -864,14 +937,13 @@ api.get("/protocols/:id/todos", async (c) => {
 
   const todos = await all<TodoRow>(
     c.env,
-    `SELECT todos.*, people.name AS person_name
+    `SELECT todos.*
      FROM todos
-     LEFT JOIN people ON people.id = todos.person_id
      WHERE todos.protocol_id = ?
      ORDER BY todos.done ASC, COALESCE(todos.position, todos.rowid) ASC, COALESCE(todos.due_date, '') ASC, datetime(todos.created_at) DESC`,
     protocolId,
   );
-  return c.json({ todos });
+  return c.json({ todos: await withTodoAssignees(c.env, todos) });
 });
 
 async function protocolProject(env: Env, protocolId: string) {
@@ -882,46 +954,136 @@ async function protocolProject(env: Env, protocolId: string) {
   );
 }
 
-async function validPersonForProtocol(env: Env, protocolId: string, personId: string | null) {
-  if (!personId) return true;
-  const protocol = await protocolProject(env, protocolId);
-  if (!protocol) return false;
-  const person = await first<PersonRow>(env, "SELECT * FROM people WHERE id = ? AND project_id = ?", personId, protocol.project_id);
-  return Boolean(person);
-}
-
-async function findOrCreatePersonForProtocol(env: Env, protocolId: string, rawName: unknown) {
+async function createDirectoryPerson(env: Env, rawName: unknown, rawNote: unknown = null) {
   const name = cleanString(rawName);
   if (!name) return null;
 
-  const protocol = await protocolProject(env, protocolId);
-  if (!protocol) return undefined;
-
-  const existing = await first<PersonRow>(
+  const timestamp = nowIso();
+  const person: DirectoryPersonRow = {
+    id: crypto.randomUUID(),
+    name,
+    note: nullableString(rawNote),
+    created_at: timestamp,
+    updated_at: timestamp,
+  };
+  await run(
     env,
-    "SELECT * FROM people WHERE project_id = ? AND name = ? COLLATE NOCASE ORDER BY created_at ASC LIMIT 1",
-    protocol.project_id,
+    "INSERT INTO people_directory (id, name, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    person.id,
+    person.name,
+    person.note,
+    person.created_at,
+    person.updated_at,
+  );
+  return person;
+}
+
+async function findOrCreateDirectoryPerson(env: Env, rawName: unknown, rawNote: unknown = null) {
+  const name = cleanString(rawName);
+  if (!name) return null;
+
+  const existing = await first<DirectoryPersonRow>(
+    env,
+    "SELECT * FROM people_directory WHERE name = ? COLLATE NOCASE ORDER BY datetime(created_at) ASC LIMIT 1",
     name,
   );
   if (existing) return existing.id;
 
+  const person = await createDirectoryPerson(env, name, rawNote);
+  if (!person) return null;
+  return person.id;
+}
+
+async function ensureProjectPersonForDirectory(env: Env, projectId: string, directoryId: string) {
+  const directoryPerson = await first<DirectoryPersonRow>(env, "SELECT * FROM people_directory WHERE id = ?", directoryId);
+  if (!directoryPerson) return null;
+
+  const existing = await first<PersonRow>(env, "SELECT * FROM people WHERE project_id = ? AND directory_id = ?", projectId, directoryId);
+  if (existing) return existing;
+
   const person: PersonRow = {
     id: crypto.randomUUID(),
-    project_id: protocol.project_id,
-    name,
-    note: null,
+    project_id: projectId,
+    directory_id: directoryId,
+    name: directoryPerson.name,
+    note: directoryPerson.note,
     created_at: nowIso(),
   };
   await run(
     env,
-    "INSERT INTO people (id, project_id, name, note, created_at) VALUES (?, ?, ?, ?, ?)",
+    "INSERT INTO people (id, project_id, directory_id, name, note, created_at) VALUES (?, ?, ?, ?, ?, ?)",
     person.id,
     person.project_id,
+    person.directory_id,
     person.name,
     person.note,
     person.created_at,
   );
-  return person.id;
+  return person;
+}
+
+async function resolveDirectoryPersonId(env: Env, protocolId: string, value: unknown) {
+  const id = nullableString(value);
+  if (!id) return null;
+  const directoryPerson = await first<DirectoryPersonRow>(env, "SELECT * FROM people_directory WHERE id = ?", id);
+  if (directoryPerson) return directoryPerson.id;
+
+  const protocol = await protocolProject(env, protocolId);
+  if (!protocol) return undefined;
+  const projectPerson = await first<PersonRow>(env, "SELECT * FROM people WHERE id = ? AND project_id = ?", id, protocol.project_id);
+  if (!projectPerson) return null;
+  if (projectPerson.directory_id) return projectPerson.directory_id;
+
+  const createdDirectoryPerson = await createDirectoryPerson(env, projectPerson.name, projectPerson.note);
+  if (!createdDirectoryPerson) return null;
+  await run(env, "UPDATE people SET directory_id = ? WHERE id = ?", createdDirectoryPerson.id, projectPerson.id);
+  return createdDirectoryPerson.id;
+}
+
+async function resolveTodoAssigneeInputs(env: Env, protocolId: string, body: JsonRecord) {
+  const protocol = await protocolProject(env, protocolId);
+  if (!protocol) return undefined;
+
+  const rawAssignees = Array.isArray(body.assignees) ? body.assignees : null;
+  const inputs = rawAssignees?.length
+    ? rawAssignees
+    : hasOwn(body, "person_name") || hasOwn(body, "person_id")
+      ? [{ person_id: body.person_id, name: body.person_name, role: body.person_role }]
+      : [];
+
+  const assignees: Array<{ person_id: string; role: string | null }> = [];
+  const seen = new Set<string>();
+  for (const input of inputs) {
+    if (!isRecord(input)) continue;
+    let personId = await resolveDirectoryPersonId(env, protocolId, input.person_id);
+    if (personId === undefined) return undefined;
+    if (!personId && hasOwn(input, "name")) {
+      personId = await findOrCreateDirectoryPerson(env, input.name);
+    }
+    if (!personId) continue;
+    const role = validateTodoPersonRole(input.role);
+    if (role === undefined) throw new Error("Invalid RASCI role");
+    if (seen.has(personId)) continue;
+    seen.add(personId);
+    await ensureProjectPersonForDirectory(env, protocol.project_id, personId);
+    assignees.push({ person_id: personId, role });
+  }
+  return assignees;
+}
+
+async function addTodoAssignees(env: Env, todoId: string, assignees: Array<{ person_id: string; role: string | null }>) {
+  const timestamp = nowIso();
+  for (const assignee of assignees) {
+    await run(
+      env,
+      "INSERT INTO todo_assignees (id, todo_id, person_id, role, created_at) VALUES (?, ?, ?, ?, ?)",
+      crypto.randomUUID(),
+      todoId,
+      assignee.person_id,
+      assignee.role,
+      timestamp,
+    );
+  }
 }
 
 api.post("/protocols/:id/todos", async (c) => {
@@ -933,16 +1095,14 @@ api.post("/protocols/:id/todos", async (c) => {
   const todoBody = cleanString(body.body);
   if (!todoBody) return jsonError(c, 400, "To-do body is required");
 
-  let personId = nullableString(body.person_id);
-  if (hasOwn(body, "person_name")) {
-    const resolvedPersonId = await findOrCreatePersonForProtocol(c.env, protocolId, body.person_name);
-    if (resolvedPersonId === undefined) return jsonError(c, 404, "Protocol not found");
-    personId = resolvedPersonId;
-  } else if (!(await validPersonForProtocol(c.env, protocolId, personId))) {
-    return jsonError(c, 400, "Person does not belong to this project");
+  let assignees: Array<{ person_id: string; role: string | null }>;
+  try {
+    const resolvedAssignees = await resolveTodoAssigneeInputs(c.env, protocolId, body);
+    if (resolvedAssignees === undefined) return jsonError(c, 404, "Protocol not found");
+    assignees = resolvedAssignees;
+  } catch (error) {
+    return jsonError(c, 400, error instanceof Error ? error.message : "Invalid assignee");
   }
-  const personRole = validateTodoPersonRole(body.person_role);
-  if (personRole === undefined) return jsonError(c, 400, "Invalid RASCI role");
 
   const timestamp = nowIso();
   const maxPosition = await first<{ position: number | null }>(c.env, "SELECT MAX(position) AS position FROM todos");
@@ -952,8 +1112,8 @@ api.post("/protocols/:id/todos", async (c) => {
     body: todoBody,
     done: body.done === true || body.done === 1 ? 1 : 0,
     due_date: nullableString(body.due_date),
-    person_id: personId,
-    person_role: personId ? personRole : null,
+    person_id: null,
+    person_role: null,
     position: (maxPosition?.position || 0) + 1,
     created_at: timestamp,
     updated_at: timestamp,
@@ -973,7 +1133,9 @@ api.post("/protocols/:id/todos", async (c) => {
     todo.created_at,
     todo.updated_at,
   );
-  return c.json({ todo }, 201);
+  await addTodoAssignees(c.env, todo.id, assignees);
+  const [createdTodo] = await withTodoAssignees(c.env, [todo]);
+  return c.json({ todo: createdTodo }, 201);
 });
 
 api.patch("/todos/reorder", async (c) => {
@@ -1008,43 +1170,92 @@ api.patch("/todos/:id", async (c) => {
     sets.push("due_date = ?");
     values.push(nullableString(body.due_date));
   }
-  let nextPersonId = existing.person_id;
-  if (hasOwn(body, "person_name")) {
-    const personId = await findOrCreatePersonForProtocol(c.env, existing.protocol_id, body.person_name);
-    if (personId === undefined) return jsonError(c, 404, "Protocol not found");
-    nextPersonId = personId;
-    sets.push("person_id = ?");
-    values.push(personId);
-  } else if (hasOwn(body, "person_id")) {
-    const personId = nullableString(body.person_id);
-    if (!(await validPersonForProtocol(c.env, existing.protocol_id, personId))) {
-      return jsonError(c, 400, "Person does not belong to this project");
-    }
-    nextPersonId = personId;
-    sets.push("person_id = ?");
-    values.push(personId);
-  }
-  if (hasOwn(body, "person_role")) {
-    const personRole = validateTodoPersonRole(body.person_role);
-    if (personRole === undefined) return jsonError(c, 400, "Invalid RASCI role");
-    sets.push("person_role = ?");
-    values.push(nextPersonId ? personRole : null);
-  } else if ((hasOwn(body, "person_id") || hasOwn(body, "person_name")) && !nextPersonId) {
-    sets.push("person_role = ?");
-    values.push(null);
+  if (sets.length) {
+    sets.push("updated_at = ?");
+    values.push(nowIso(), id);
+    await run(c.env, `UPDATE todos SET ${sets.join(", ")} WHERE id = ?`, ...values);
   }
 
-  if (!sets.length) return c.json({ todo: existing });
-  sets.push("updated_at = ?");
-  values.push(nowIso(), id);
-  await run(c.env, `UPDATE todos SET ${sets.join(", ")} WHERE id = ?`, ...values);
+  const todo = await first<TodoRow>(c.env, "SELECT * FROM todos WHERE id = ?", id);
+  if (!todo) return jsonError(c, 404, "To-do not found");
+  const [todoWithAssignees] = await withTodoAssignees(c.env, [todo]);
+  return c.json({ todo: todoWithAssignees });
+});
 
-  const todo = await first<TodoRow>(
+api.get("/todos/:id/assignees", async (c) => {
+  const id = c.req.param("id");
+  const todo = await first<TodoRow>(c.env, "SELECT * FROM todos WHERE id = ?", id);
+  if (!todo) return jsonError(c, 404, "To-do not found");
+  const [todoWithAssignees] = await withTodoAssignees(c.env, [todo]);
+  return c.json({ assignees: todoWithAssignees.assignees });
+});
+
+api.post("/todos/:id/assignees", async (c) => {
+  const todoId = c.req.param("id");
+  const todo = await first<TodoRow>(c.env, "SELECT * FROM todos WHERE id = ?", todoId);
+  if (!todo) return jsonError(c, 404, "To-do not found");
+
+  const body = await readJson(c);
+  let personId = await resolveDirectoryPersonId(c.env, todo.protocol_id, body.person_id);
+  if (personId === undefined) return jsonError(c, 404, "Protocol not found");
+  if (!personId && hasOwn(body, "name")) {
+    const person = await createDirectoryPerson(c.env, body.name);
+    personId = person?.id || null;
+  }
+  if (!personId) return jsonError(c, 400, "Person is required");
+
+  const role = validateTodoPersonRole(body.role);
+  if (role === undefined) return jsonError(c, 400, "Invalid RASCI role");
+
+  const protocol = await protocolProject(c.env, todo.protocol_id);
+  if (!protocol) return jsonError(c, 404, "Protocol not found");
+  await ensureProjectPersonForDirectory(c.env, protocol.project_id, personId);
+
+  const existing = await first<TodoAssigneeRow>(
     c.env,
-    "SELECT todos.*, people.name AS person_name FROM todos LEFT JOIN people ON people.id = todos.person_id WHERE todos.id = ?",
-    id,
+    "SELECT * FROM todo_assignees WHERE todo_id = ? AND person_id = ?",
+    todoId,
+    personId,
   );
-  return c.json({ todo });
+  if (existing) {
+    await run(c.env, "UPDATE todo_assignees SET role = ? WHERE id = ?", role, existing.id);
+    const assignee = await todoAssigneePayload(c.env, existing.id);
+    return c.json({ assignee });
+  }
+
+  const assigneeId = crypto.randomUUID();
+  await run(
+    c.env,
+    "INSERT INTO todo_assignees (id, todo_id, person_id, role, created_at) VALUES (?, ?, ?, ?, ?)",
+    assigneeId,
+    todoId,
+    personId,
+    role,
+    nowIso(),
+  );
+  const assignee = await todoAssigneePayload(c.env, assigneeId);
+  return c.json({ assignee }, 201);
+});
+
+api.patch("/todo-assignees/:id", async (c) => {
+  const id = c.req.param("id");
+  const existing = await first<TodoAssigneeRow>(c.env, "SELECT * FROM todo_assignees WHERE id = ?", id);
+  if (!existing) return jsonError(c, 404, "Assignee not found");
+
+  const body = await readJson(c);
+  const role = validateTodoPersonRole(body.role);
+  if (role === undefined) return jsonError(c, 400, "Invalid RASCI role");
+  await run(c.env, "UPDATE todo_assignees SET role = ? WHERE id = ?", role, id);
+  const assignee = await todoAssigneePayload(c.env, id);
+  return c.json({ assignee });
+});
+
+api.delete("/todo-assignees/:id", async (c) => {
+  const id = c.req.param("id");
+  const existing = await first<TodoAssigneeRow>(c.env, "SELECT * FROM todo_assignees WHERE id = ?", id);
+  if (!existing) return jsonError(c, 404, "Assignee not found");
+  await run(c.env, "DELETE FROM todo_assignees WHERE id = ?", id);
+  return c.json({ ok: true });
 });
 
 api.delete("/todos/:id", async (c) => {
@@ -1052,6 +1263,99 @@ api.delete("/todos/:id", async (c) => {
   const existing = await first<TodoRow>(c.env, "SELECT * FROM todos WHERE id = ?", id);
   if (!existing) return jsonError(c, 404, "To-do not found");
   await run(c.env, "DELETE FROM todos WHERE id = ?", id);
+  return c.json({ ok: true });
+});
+
+api.get("/people", async (c) => {
+  const people = await all<DirectoryPersonRow>(
+    c.env,
+    "SELECT * FROM people_directory ORDER BY name COLLATE NOCASE, datetime(created_at) ASC",
+  );
+  const projectRows = await all<{ person_id: string; project_title: string }>(
+    c.env,
+    `SELECT people.directory_id AS person_id, projects.title AS project_title
+     FROM people
+     JOIN projects ON projects.id = people.project_id
+     WHERE people.directory_id IS NOT NULL
+     ORDER BY projects.title COLLATE NOCASE`,
+  );
+  const projectsByPerson = projectRows.reduce<Record<string, string[]>>((map, row) => {
+    map[row.person_id] ||= [];
+    if (!map[row.person_id].includes(row.project_title)) map[row.person_id].push(row.project_title);
+    return map;
+  }, {});
+  return c.json({
+    people: people.map((person) => ({
+      ...person,
+      projects: projectsByPerson[person.id] || [],
+    })),
+  });
+});
+
+api.post("/people", async (c) => {
+  const body = await readJson(c);
+  const person = await createDirectoryPerson(c.env, body.name, body.note);
+  if (!person) return jsonError(c, 400, "Person name is required");
+  return c.json({ person: { ...person, projects: [] } }, 201);
+});
+
+api.patch("/people/:id", async (c) => {
+  const id = c.req.param("id");
+  const existing = await first<DirectoryPersonRow>(c.env, "SELECT * FROM people_directory WHERE id = ?", id);
+  if (!existing) return jsonError(c, 404, "Person not found");
+
+  const body = await readJson(c);
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  if (hasOwn(body, "name")) {
+    const name = cleanString(body.name);
+    if (!name) return jsonError(c, 400, "Person name cannot be empty");
+    sets.push("name = ?");
+    values.push(name);
+  }
+  if (hasOwn(body, "note")) {
+    sets.push("note = ?");
+    values.push(nullableString(body.note));
+  }
+  if (!sets.length) {
+    return c.json({ person: { ...existing, projects: [] } });
+  }
+
+  sets.push("updated_at = ?");
+  values.push(nowIso(), id);
+  await run(c.env, `UPDATE people_directory SET ${sets.join(", ")} WHERE id = ?`, ...values);
+
+  if (hasOwn(body, "name") || hasOwn(body, "note")) {
+    const updated = await first<DirectoryPersonRow>(c.env, "SELECT * FROM people_directory WHERE id = ?", id);
+    if (updated) {
+      await run(c.env, "UPDATE people SET name = ?, note = ? WHERE directory_id = ?", updated.name, updated.note, id);
+    }
+  }
+
+  const { people } = await (async () => {
+    const person = await first<DirectoryPersonRow>(c.env, "SELECT * FROM people_directory WHERE id = ?", id);
+    if (!person) return { people: [] as Array<DirectoryPersonRow & { projects: string[] }> };
+    const projects = await all<{ title: string }>(
+      c.env,
+      `SELECT projects.title
+       FROM people
+       JOIN projects ON projects.id = people.project_id
+       WHERE people.directory_id = ?
+       ORDER BY projects.title COLLATE NOCASE`,
+      id,
+    );
+    return { people: [{ ...person, projects: projects.map((project) => project.title) }] };
+  })();
+  return c.json({ person: people[0] });
+});
+
+api.delete("/people/:id", async (c) => {
+  const id = c.req.param("id");
+  const existing = await first<DirectoryPersonRow>(c.env, "SELECT * FROM people_directory WHERE id = ?", id);
+  if (!existing) return jsonError(c, 404, "Person not found");
+  await run(c.env, "DELETE FROM todo_assignees WHERE person_id = ?", id);
+  await run(c.env, "DELETE FROM people WHERE directory_id = ?", id);
+  await run(c.env, "DELETE FROM people_directory WHERE id = ?", id);
   return c.json({ ok: true });
 });
 
@@ -1069,32 +1373,27 @@ api.post("/projects/:id/people", async (c) => {
   if (!project) return jsonError(c, 404, "Project not found");
 
   const body = await readJson(c);
-  const name = cleanString(body.name);
-  if (!name) return jsonError(c, 400, "Person name is required");
+  const requestedDirectoryId = nullableString(body.directory_id);
+  let directoryId = requestedDirectoryId;
+  if (directoryId) {
+    const directoryPerson = await first<DirectoryPersonRow>(c.env, "SELECT * FROM people_directory WHERE id = ?", directoryId);
+    if (!directoryPerson) return jsonError(c, 400, "Directory person not found");
+  } else {
+    const directoryPerson = await createDirectoryPerson(c.env, body.name, body.note);
+    if (!directoryPerson) return jsonError(c, 400, "Person name is required");
+    directoryId = directoryPerson.id;
+  }
+  if (!directoryId) return jsonError(c, 400, "Person name is required");
 
-  const person: PersonRow = {
-    id: crypto.randomUUID(),
-    project_id: projectId,
-    name,
-    note: nullableString(body.note),
-    created_at: nowIso(),
-  };
-
-  await run(
-    c.env,
-    "INSERT INTO people (id, project_id, name, note, created_at) VALUES (?, ?, ?, ?, ?)",
-    person.id,
-    person.project_id,
-    person.name,
-    person.note,
-    person.created_at,
-  );
+  const person = await ensureProjectPersonForDirectory(c.env, projectId, directoryId);
+  if (!person) return jsonError(c, 400, "Directory person not found");
   return c.json({ person }, 201);
 });
 
-api.patch("/people/:id", async (c) => {
-  const id = c.req.param("id");
-  const existing = await first<PersonRow>(c.env, "SELECT * FROM people WHERE id = ?", id);
+api.patch("/projects/:projectId/people/:personId", async (c) => {
+  const projectId = c.req.param("projectId");
+  const id = c.req.param("personId");
+  const existing = await first<PersonRow>(c.env, "SELECT * FROM people WHERE id = ? AND project_id = ?", id, projectId);
   if (!existing) return jsonError(c, 404, "Person not found");
 
   const body = await readJson(c);
@@ -1112,19 +1411,40 @@ api.patch("/people/:id", async (c) => {
   }
 
   if (!sets.length) return c.json({ person: existing });
-  values.push(id);
-  await run(c.env, `UPDATE people SET ${sets.join(", ")} WHERE id = ?`, ...values);
+  values.push(id, projectId);
+  await run(c.env, `UPDATE people SET ${sets.join(", ")} WHERE id = ? AND project_id = ?`, ...values);
 
-  const person = await first<PersonRow>(c.env, "SELECT * FROM people WHERE id = ?", id);
+  const person = await first<PersonRow>(c.env, "SELECT * FROM people WHERE id = ? AND project_id = ?", id, projectId);
+  if (person?.directory_id) {
+    await run(c.env, "UPDATE people_directory SET name = ?, note = ?, updated_at = ? WHERE id = ?", person.name, person.note, nowIso(), person.directory_id);
+    await run(c.env, "UPDATE people SET name = ?, note = ? WHERE directory_id = ?", person.name, person.note, person.directory_id);
+  }
   return c.json({ person });
 });
 
-api.delete("/people/:id", async (c) => {
-  const id = c.req.param("id");
-  const existing = await first<PersonRow>(c.env, "SELECT * FROM people WHERE id = ?", id);
+api.delete("/projects/:projectId/people/:personId", async (c) => {
+  const projectId = c.req.param("projectId");
+  const id = c.req.param("personId");
+  const existing = await first<PersonRow>(c.env, "SELECT * FROM people WHERE id = ? AND project_id = ?", id, projectId);
   if (!existing) return jsonError(c, 404, "Person not found");
-  await run(c.env, "UPDATE todos SET person_id = NULL, updated_at = ? WHERE person_id = ?", nowIso(), id);
-  await run(c.env, "DELETE FROM people WHERE id = ?", id);
+  if (existing.directory_id) {
+    await run(
+      c.env,
+      `DELETE FROM todo_assignees
+       WHERE person_id = ?
+       AND todo_id IN (
+         SELECT todos.id
+         FROM todos
+         JOIN protocols ON protocols.id = todos.protocol_id
+         WHERE protocols.project_id = ?
+       )`,
+      existing.directory_id,
+      projectId,
+    );
+  } else {
+    await run(c.env, "UPDATE todos SET person_id = NULL, updated_at = ? WHERE person_id = ?", nowIso(), id);
+  }
+  await run(c.env, "DELETE FROM people WHERE id = ? AND project_id = ?", id, projectId);
   return c.json({ ok: true });
 });
 
@@ -1476,9 +1796,10 @@ api.get("/projects/:id/export", async (c) => {
     );
     const todos = await all<TodoRow>(
       c.env,
-      "SELECT todos.*, people.name AS person_name FROM todos LEFT JOIN people ON people.id = todos.person_id WHERE todos.protocol_id = ? ORDER BY todos.done ASC, datetime(todos.created_at)",
+      "SELECT * FROM todos WHERE protocol_id = ? ORDER BY done ASC, datetime(created_at)",
       protocol.id,
     );
+    const todosWithAssignees = await withTodoAssignees(c.env, todos);
 
     parts.push("");
     parts.push(`## ${protocol.title}`);
@@ -1503,10 +1824,12 @@ api.get("/projects/:id/export", async (c) => {
     if (!todos.length) {
       parts.push("-");
     }
-    for (const todo of todos) {
+    for (const todo of todosWithAssignees) {
       const due = todo.due_date ? ` (due: ${todo.due_date})` : "";
-      const person = todo.person_name ? ` (person: ${todo.person_name})` : "";
-      parts.push(`- [${todo.done ? "x" : " "}] ${todo.body}${due}${person}`);
+      const assignees = todo.assignees.length
+        ? ` (people: ${todo.assignees.map((assignee) => `${assignee.role ? `[${assignee.role}] ` : ""}${assignee.name}`).join(", ")})`
+        : "";
+      parts.push(`- [${todo.done ? "x" : " "}] ${todo.body}${due}${assignees}`);
     }
   }
 

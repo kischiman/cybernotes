@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS photos (
 CREATE TABLE IF NOT EXISTS people (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  directory_id TEXT REFERENCES people_directory(id),
   name TEXT NOT NULL,
   note TEXT,
   created_at TEXT
@@ -65,6 +66,22 @@ CREATE TABLE IF NOT EXISTS todos (
   position INTEGER,
   created_at TEXT,
   updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS people_directory (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  note TEXT,
+  created_at TEXT,
+  updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS todo_assignees (
+  id TEXT PRIMARY KEY,
+  todo_id TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+  person_id TEXT NOT NULL REFERENCES people_directory(id),
+  role TEXT,
+  created_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS checkin_templates (
@@ -107,8 +124,13 @@ CREATE INDEX IF NOT EXISTS idx_protocols_deadline ON protocols(deadline);
 CREATE INDEX IF NOT EXISTS idx_entries_protocol_id_created_at ON entries(protocol_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_photos_entry_id ON photos(entry_id);
 CREATE INDEX IF NOT EXISTS idx_people_project_id ON people(project_id);
+CREATE INDEX IF NOT EXISTS idx_people_directory_project_people ON people(directory_id);
+CREATE INDEX IF NOT EXISTS idx_people_directory_name ON people_directory(name);
+CREATE INDEX IF NOT EXISTS idx_people_directory_updated_at ON people_directory(updated_at);
 CREATE INDEX IF NOT EXISTS idx_todos_protocol_id_done ON todos(protocol_id, done);
 CREATE INDEX IF NOT EXISTS idx_todos_position ON todos(position);
+CREATE INDEX IF NOT EXISTS idx_todo_assignees_todo_id ON todo_assignees(todo_id);
+CREATE INDEX IF NOT EXISTS idx_todo_assignees_person_id ON todo_assignees(person_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_checkin_entries_date_session ON checkin_entries(date, session);
 CREATE INDEX IF NOT EXISTS idx_checkin_templates_session_position ON checkin_templates(session, position);
 CREATE INDEX IF NOT EXISTS idx_checkin_answers_entry_id_position ON checkin_answers(entry_id, position);
