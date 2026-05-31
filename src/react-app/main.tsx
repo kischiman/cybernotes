@@ -585,16 +585,17 @@ function Dashboard() {
   );
 }
 
-function TodoPersonBadge({ showRole = true, todo }: { showRole?: boolean; todo: Todo }) {
-  if (!todo.person_name) return null;
-  if (!showRole) {
-    return <em className="todo-person-inline">· {todo.person_name}</em>;
-  }
+function TodoAssigneeBadges({ todo }: { todo: Todo }) {
+  if (!todo.assignees?.length) return null;
   return (
-    <em className="person-role-badge" title={todo.person_role ? roleLabel(todo.person_role) : undefined}>
-      {todo.person_role ? `[${todo.person_role}] ` : ""}
-      {todo.person_name}
-    </em>
+    <span className="assignee-badges">
+      {todo.assignees.map((assignee) => (
+        <em className="assignee-badge" key={assignee.assignee_id} title={assignee.role ? roleLabel(assignee.role) : undefined}>
+          {assignee.role ? `[${assignee.role}] ` : ""}
+          {assignee.name}
+        </em>
+      ))}
+    </span>
   );
 }
 
@@ -639,7 +640,7 @@ function DashboardTodoItem({
         </span>
         <div className="todo-meta-row">
           <DeadlineBadge value={todo.due_date} />
-          <TodoPersonBadge todo={todo} />
+          <TodoAssigneeBadges todo={todo} />
         </div>
       </div>
     </article>
@@ -1083,7 +1084,7 @@ function TodayTodoItem({
         <span>{[todo.project_title, todo.protocol_title].filter(Boolean).join(" / ")}</span>
         <div className="todo-meta-row">
           <DeadlineBadge value={todo.due_date} />
-          <TodoPersonBadge showRole={false} todo={todo} />
+          <TodoAssigneeBadges todo={todo} />
         </div>
       </div>
     </article>
@@ -1129,7 +1130,7 @@ function SortableTodayTodoItem({
         <span>{[todo.project_title, todo.protocol_title].filter(Boolean).join(" / ")}</span>
         <div className="todo-meta-row">
           <DeadlineBadge value={todo.due_date} />
-          <TodoPersonBadge showRole={false} todo={todo} />
+          <TodoAssigneeBadges todo={todo} />
         </div>
       </div>
     </article>
@@ -2287,7 +2288,7 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
               <span>
                 <strong>{todo.body}</strong>
                 <DeadlineBadge value={todo.due_date} />
-                <TodoPersonBadge todo={todo} />
+                <TodoAssigneeBadges todo={todo} />
               </span>
             </article>
           ))}
