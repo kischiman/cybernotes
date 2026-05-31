@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState } from "react";
+import { StrictMode, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   DndContext,
@@ -88,6 +88,13 @@ type Entry = {
   photos: Photo[];
 };
 
+type TodoAssignee = {
+  assignee_id: string;
+  person_id: string;
+  name: string;
+  role: string | null;
+};
+
 type Todo = {
   id: string;
   protocol_id: string;
@@ -103,14 +110,25 @@ type Todo = {
   protocol_title?: string;
   created_at: string;
   updated_at: string;
+  assignees: TodoAssignee[];
 };
 
 type Person = {
   id: string;
   project_id: string;
+  directory_id: string | null;
   name: string;
   note: string | null;
   created_at: string;
+};
+
+type DirectoryPerson = {
+  id: string;
+  name: string;
+  note: string | null;
+  projects: string[];
+  created_at: string;
+  updated_at: string | null;
 };
 
 type CheckinSession = "morning" | "evening";
@@ -774,6 +792,7 @@ function TodayScreen() {
   const [completingTodoIds, setCompletingTodoIds] = useState<string[]>([]);
   const [completedOpen, setCompletedOpen] = useState(false);
   const [addTodoOpen, setAddTodoOpen] = useState(false);
+  const [editingTodo, setEditingTodo] = useState<Todo | null>(null);
   const [openSession, setOpenSession] = useState<CheckinSession | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [datesOpen, setDatesOpen] = useState(false);
@@ -951,6 +970,7 @@ function TodayScreen() {
                 <SortableTodayTodoItem
                   completing={completingTodoIds.includes(todo.id)}
                   key={todo.id}
+                  onEdit={() => setEditingTodo(todo)}
                   onToggle={() => completeTodo(todo)}
                   todo={todo}
                 />
@@ -974,7 +994,9 @@ function TodayScreen() {
         {completedOpen ? (
           <div className="todo-priority-list completed-list">
             {completedToday.length ? (
-              completedToday.map((todo) => <TodayTodoItem completing={false} key={todo.id} todo={todo} />)
+              completedToday.map((todo) => (
+                <TodayTodoItem completing={false} key={todo.id} onEdit={() => setEditingTodo(todo)} todo={todo} />
+              ))
             ) : (
               <Empty>Nothing completed today yet.</Empty>
             )}
@@ -1014,10 +1036,17 @@ function TodayScreen() {
       ) : null}
 
       {addTodoOpen ? (
-        <AddTodoSheet
+        <TodoSheet
           onClose={() => setAddTodoOpen(false)}
           onSaved={() => load(selectedDate)}
           protocols={activeProtocols}
+        />
+      ) : null}
+      {editingTodo ? (
+        <TodoSheet
+          onClose={() => setEditingTodo(null)}
+          onSaved={() => load(selectedDate)}
+          todo={editingTodo}
         />
       ) : null}
     </section>
@@ -1026,21 +1055,27 @@ function TodayScreen() {
 
 function TodayTodoItem({
   completing,
+  onEdit,
   onToggle,
   todo,
 }: {
   completing: boolean;
+  onEdit?: () => void;
   onToggle?: () => void;
   todo: Todo;
 }) {
   return (
-    <article className={`dashboard-todo today-todo ${todo.done ? "done" : ""} ${completing ? "is-completing" : ""}`}>
+    <article
+      className={`dashboard-todo today-todo ${todo.done ? "done" : ""} ${completing ? "is-completing" : ""}`}
+      onClick={onEdit}
+    >
       <span />
       <input
         aria-label={`Mark ${todo.body} complete`}
         checked={Boolean(todo.done)}
         disabled={!onToggle}
         onChange={onToggle}
+        onClick={(event) => event.stopPropagation()}
         type="checkbox"
       />
       <div>
@@ -1057,10 +1092,12 @@ function TodayTodoItem({
 
 function SortableTodayTodoItem({
   completing,
+  onEdit,
   onToggle,
   todo,
 }: {
   completing: boolean;
+  onEdit?: () => void;
   onToggle: () => void;
   todo: Todo;
 }) {
@@ -1073,13 +1110,20 @@ function SortableTodayTodoItem({
   return (
     <article
       className={`dashboard-todo today-todo ${completing ? "is-completing" : ""} ${isDragging ? "is-dragging" : ""}`}
+      onClick={onEdit}
       ref={setNodeRef}
       style={style}
     >
-      <button className="drag-handle" type="button" aria-label={`Reorder ${todo.body}`} {...attributes} {...listeners}>
+      <button className="drag-handle" type="button" aria-label={`Reorder ${todo.body}`} onClick={(event) => event.stopPropagation()} {...attributes} {...listeners}>
         <GripVertical size={18} />
       </button>
-      <input aria-label={`Mark ${todo.body} complete`} checked={Boolean(todo.done)} onChange={onToggle} type="checkbox" />
+      <input
+        aria-label={`Mark ${todo.body} complete`}
+        checked={Boolean(todo.done)}
+        onChange={onToggle}
+        onClick={(event) => event.stopPropagation()}
+        type="checkbox"
+      />
       <div>
         <strong>{todo.body}</strong>
         <span>{[todo.project_title, todo.protocol_title].filter(Boolean).join(" / ")}</span>
@@ -1092,108 +1136,373 @@ function SortableTodayTodoItem({
   );
 }
 
-function AddTodoSheet({
+type TodoAssigneeDraft = {
+  key: string;
+  assignee_id?: string;
+  person_id: string;
+  name: string;
+  query: string;
+  role: string;
+  pickerOpen: boolean;
+};
+
+function assigneeDraftFromTodo(assignee: TodoAssignee): TodoAssigneeDraft {
+  return {
+    key: assignee.assignee_id,
+    assignee_id: assignee.assignee_id,
+    person_id: assignee.person_id,
+    name: assignee.name,
+    query: assignee.name,
+    role: assignee.role || "",
+    pickerOpen: false,
+  };
+}
+
+function emptyAssigneeDraft(): TodoAssigneeDraft {
+  return {
+    key: crypto.randomUUID(),
+    person_id: "",
+    name: "",
+    query: "",
+    role: "",
+    pickerOpen: true,
+  };
+}
+
+function normalizedAssignees(rows: TodoAssigneeDraft[]) {
+  const seen = new Set<string>();
+  return rows
+    .filter((row) => row.person_id)
+    .filter((row) => {
+      if (seen.has(row.person_id)) return false;
+      seen.add(row.person_id);
+      return true;
+    })
+    .map((row) => ({
+      assignee_id: row.assignee_id,
+      person_id: row.person_id,
+      role: row.role || null,
+    }));
+}
+
+function todoSheetSnapshot(protocolId: string, body: string, dueDate: string, assignees: TodoAssigneeDraft[]) {
+  return JSON.stringify({
+    protocolId,
+    body: body.trim(),
+    dueDate,
+    assignees: normalizedAssignees(assignees).map((assignee) => ({
+      person_id: assignee.person_id,
+      role: assignee.role,
+    })),
+  });
+}
+
+function TodoSheet({
+  fixedProtocolId,
   onClose,
   onSaved,
-  protocols,
+  protocols = [],
+  todo,
 }: {
+  fixedProtocolId?: string;
   onClose: () => void;
   onSaved: () => Promise<void>;
-  protocols: Protocol[];
+  protocols?: Protocol[];
+  todo?: Todo | null;
 }) {
-  const [protocolId, setProtocolId] = useState(protocols[0]?.id || "");
-  const [body, setBody] = useState("");
-  const [dueDate, setDueDate] = useState("");
-  const [personName, setPersonName] = useState("");
-  const [personRole, setPersonRole] = useState("");
+  const initial = useRef({
+    protocolId: fixedProtocolId || todo?.protocol_id || protocols[0]?.id || "",
+    body: todo?.body || "",
+    dueDate: todo?.due_date || "",
+    assignees: (todo?.assignees || []).map(assigneeDraftFromTodo),
+  });
+  const [protocolId, setProtocolId] = useState(initial.current.protocolId);
+  const [body, setBody] = useState(initial.current.body);
+  const [dueDate, setDueDate] = useState(initial.current.dueDate);
+  const [assignees, setAssignees] = useState<TodoAssigneeDraft[]>(initial.current.assignees);
+  const [people, setPeople] = useState<DirectoryPerson[]>([]);
+  const [peopleLoading, setPeopleLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const bodyRef = useRef<HTMLInputElement | null>(null);
+  const touchStartY = useRef<number | null>(null);
+  const initialSnapshot = useRef(
+    todoSheetSnapshot(initial.current.protocolId, initial.current.body, initial.current.dueDate, initial.current.assignees),
+  );
+  const canChooseProtocol = !fixedProtocolId && !todo;
+  const isEditing = Boolean(todo);
+
+  useEffect(() => {
+    bodyRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    setPeopleLoading(true);
+    apiJson<{ people: DirectoryPerson[] }>("/api/people")
+      .then(({ people: nextPeople }) => {
+        if (active) setPeople(nextPeople);
+      })
+      .catch((loadError) => {
+        if (active) setError(loadError instanceof Error ? loadError.message : "Could not load people");
+      })
+      .finally(() => {
+        if (active) setPeopleLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  function isDirty() {
+    return todoSheetSnapshot(protocolId, body, dueDate, assignees) !== initialSnapshot.current;
+  }
+
+  function requestClose() {
+    if (isDirty() && !window.confirm("Discard unsaved changes?")) return;
+    onClose();
+  }
+
+  function updateAssignee(key: string, updater: (row: TodoAssigneeDraft) => TodoAssigneeDraft) {
+    setAssignees((current) => current.map((row) => (row.key === key ? updater(row) : row)));
+  }
+
+  function selectPerson(key: string, person: DirectoryPerson) {
+    updateAssignee(key, (row) => ({
+      ...row,
+      assignee_id: row.person_id === person.id ? row.assignee_id : undefined,
+      person_id: person.id,
+      name: person.name,
+      query: person.name,
+      pickerOpen: false,
+    }));
+  }
+
+  async function createAndSelectPerson(key: string, name: string) {
+    const cleanName = name.trim();
+    if (!cleanName) return;
+    setError(null);
+    try {
+      const { person } = await apiJson<{ person: DirectoryPerson }>("/api/people", {
+        method: "POST",
+        body: JSON.stringify({ name: cleanName }),
+      });
+      setPeople((current) => [...current, person].sort((left, right) => left.name.localeCompare(right.name)));
+      selectPerson(key, person);
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : "Could not add person");
+    }
+  }
+
+  async function syncAssignees(todoId: string, nextAssignees: ReturnType<typeof normalizedAssignees>) {
+    const previousAssignees = todo?.assignees || [];
+    for (const previous of previousAssignees) {
+      const kept = nextAssignees.find(
+        (assignee) => assignee.assignee_id === previous.assignee_id && assignee.person_id === previous.person_id,
+      );
+      if (!kept) {
+        await apiJson(`/api/todo-assignees/${previous.assignee_id}`, { method: "DELETE" });
+      }
+    }
+    for (const next of nextAssignees) {
+      const previous = next.assignee_id
+        ? previousAssignees.find(
+            (assignee) => assignee.assignee_id === next.assignee_id && assignee.person_id === next.person_id,
+          )
+        : null;
+      if (!previous) {
+        await apiJson(`/api/todos/${todoId}/assignees`, {
+          method: "POST",
+          body: JSON.stringify({ person_id: next.person_id, role: next.role }),
+        });
+      } else if ((previous.role || null) !== next.role) {
+        await apiJson(`/api/todo-assignees/${previous.assignee_id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ role: next.role }),
+        });
+      }
+    }
+  }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!protocolId) return;
+    const selectedProtocolId = fixedProtocolId || protocolId;
+    if (!selectedProtocolId) {
+      setError("Choose a protocol");
+      return;
+    }
+    if (assignees.some((assignee) => assignee.query.trim() && !assignee.person_id)) {
+      setError("Choose a person from the directory or add the typed name first");
+      return;
+    }
+
+    const nextAssignees = normalizedAssignees(assignees);
     setError(null);
     try {
-      await apiJson(`/api/protocols/${protocolId}/todos`, {
-        method: "POST",
-        body: JSON.stringify({
-          body,
-          due_date: dueDate,
-          person_name: personName,
-          person_role: personRole,
-        }),
-      });
+      if (todo) {
+        await apiJson(`/api/todos/${todo.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ body, due_date: dueDate }),
+        });
+        await syncAssignees(todo.id, nextAssignees);
+      } else {
+        await apiJson(`/api/protocols/${selectedProtocolId}/todos`, {
+          method: "POST",
+          body: JSON.stringify({
+            body,
+            due_date: dueDate,
+            assignees: nextAssignees.map((assignee) => ({ person_id: assignee.person_id, role: assignee.role })),
+          }),
+        });
+      }
       await onSaved();
       onClose();
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "Could not add to-do");
+      setError(submitError instanceof Error ? submitError.message : "Could not save to-do");
     }
   }
 
   return (
-    <div className="sheet-backdrop">
-      <form className="sheet form" onSubmit={submit}>
+    <div className="sheet-backdrop" onClick={requestClose}>
+      <form
+        className="sheet form todo-sheet"
+        onClick={(event) => event.stopPropagation()}
+        onSubmit={submit}
+        onTouchEnd={(event) => {
+          const startY = touchStartY.current;
+          const endY = event.changedTouches[0]?.clientY ?? startY;
+          touchStartY.current = null;
+          if (startY !== null && endY !== null && endY - startY > 80) requestClose();
+        }}
+        onTouchStart={(event) => {
+          touchStartY.current = event.touches[0]?.clientY ?? null;
+        }}
+      >
+        <div className="sheet-grabber" aria-hidden="true" />
         <div className="section-heading">
-          <h2>Add to-do</h2>
-          <button type="button" className="icon-only" onClick={onClose} aria-label="Close" title="Close">
-            <X size={20} />
-          </button>
+          <h2>{isEditing ? "Edit to-do" : "Add to-do"}</h2>
+          <div className="small-actions">
+            <button className="icon-only primary-icon" type="submit" aria-label="Save to-do" title="Save to-do">
+              <Check size={20} />
+            </button>
+            <button type="button" className="icon-only" onClick={requestClose} aria-label="Close" title="Close">
+              <X size={20} />
+            </button>
+          </div>
         </div>
         <ErrorBanner message={error} />
-        {!protocols.length ? <Empty>No active protocols.</Empty> : null}
+        {canChooseProtocol ? (
+          <>
+            {!protocols.length ? <Empty>No active protocols.</Empty> : null}
+            <label>
+              Protocol
+              <select value={protocolId} onChange={(event) => setProtocolId(event.target.value)} required>
+                {protocols.map((protocol) => (
+                  <option value={protocol.id} key={protocol.id}>
+                    {protocol.project_title ? `${protocol.project_title} / ` : ""}
+                    {protocol.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        ) : null}
         <label>
-          Protocol
-          <select value={protocolId} onChange={(event) => setProtocolId(event.target.value)} required>
-            {protocols.map((protocol) => (
-              <option value={protocol.id} key={protocol.id}>
-                {protocol.project_title ? `${protocol.project_title} / ` : ""}
-                {protocol.title}
-              </option>
-            ))}
-          </select>
+          Body
+          <input ref={bodyRef} value={body} onChange={(event) => setBody(event.target.value)} required />
         </label>
         <label>
-          To-do
-          <input value={body} onChange={(event) => setBody(event.target.value)} required />
-        </label>
-        <label>
-          Due
+          Due date
           <input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} />
         </label>
-        <label>
-          Person
-          <input
-            autoComplete="off"
-            placeholder="Type a name"
-            value={personName}
-            onChange={(event) => {
-              setPersonName(event.target.value);
-              if (!event.target.value.trim()) setPersonRole("");
-            }}
-          />
-        </label>
-        {personName.trim() ? (
-          <div className="field-group">
-            <span className="field-label">Role</span>
-            <div className="rasci-control" role="group" aria-label="RASCI role">
-              {RASCI_ROLES.map((role) => (
-                <button
-                  aria-pressed={personRole === role.value}
-                  className={`role-chip ${personRole === role.value ? "active" : ""}`}
-                  key={role.value}
-                  onClick={() => setPersonRole((current) => (current === role.value ? "" : role.value))}
-                  title={role.label}
-                  type="button"
-                >
-                  {role.value}
-                </button>
-              ))}
-            </div>
-            <span className="helper-text">{personRole ? roleLabel(personRole) : "Optional"}</span>
+        <div className="field-group">
+          <span className="field-label">Assignees</span>
+          <div className="assignee-editor-list">
+            {assignees.map((assignee) => {
+              const query = assignee.query.trim().toLowerCase();
+              const matches = people
+                .filter((person) => !query || person.name.toLowerCase().includes(query))
+                .slice(0, 8);
+              const hasExactMatch = people.some((person) => person.name.toLowerCase() === query);
+              return (
+                <div className="assignee-editor-row" key={assignee.key}>
+                  <div className="person-picker">
+                    <input
+                      autoComplete="off"
+                      placeholder="Search people"
+                      value={assignee.query}
+                      onBlur={() => window.setTimeout(() => updateAssignee(assignee.key, (row) => ({ ...row, pickerOpen: false })), 120)}
+                      onChange={(event) => {
+                        const nextQuery = event.target.value;
+                        updateAssignee(assignee.key, (row) => ({
+                          ...row,
+                          assignee_id: undefined,
+                          person_id: "",
+                          name: "",
+                          query: nextQuery,
+                          pickerOpen: true,
+                        }));
+                      }}
+                      onFocus={() => updateAssignee(assignee.key, (row) => ({ ...row, pickerOpen: true }))}
+                    />
+                    {assignee.pickerOpen ? (
+                      <div className="person-picker-menu">
+                        {peopleLoading ? <span className="person-picker-status">Loading people...</span> : null}
+                        {!peopleLoading && matches.length
+                          ? matches.map((person) => (
+                              <button type="button" key={person.id} onClick={() => selectPerson(assignee.key, person)}>
+                                <strong>{person.name}</strong>
+                                {person.note ? <span>{person.note}</span> : null}
+                              </button>
+                            ))
+                          : null}
+                        {!peopleLoading && query && !hasExactMatch ? (
+                          <button type="button" onClick={() => createAndSelectPerson(assignee.key, assignee.query)}>
+                            Add {assignee.query.trim()} to directory
+                          </button>
+                        ) : null}
+                        {!peopleLoading && !matches.length && !query ? (
+                          <span className="person-picker-status">No people yet</span>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="rasci-control compact-rasci" role="group" aria-label={`RASCI role for ${assignee.name || "assignee"}`}>
+                    {RASCI_ROLES.map((role) => (
+                      <button
+                        aria-pressed={assignee.role === role.value}
+                        className={`role-chip ${assignee.role === role.value ? "active" : ""}`}
+                        key={role.value}
+                        onClick={() =>
+                          updateAssignee(assignee.key, (row) => ({
+                            ...row,
+                            role: row.role === role.value ? "" : role.value,
+                          }))
+                        }
+                        title={role.label}
+                        type="button"
+                      >
+                        {role.value}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    className="icon-only danger assignee-remove"
+                    type="button"
+                    onClick={() => setAssignees((current) => current.filter((row) => row.key !== assignee.key))}
+                    aria-label={`Remove ${assignee.name || "assignee"}`}
+                    title="Remove assignee"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+              );
+            })}
           </div>
-        ) : null}
-        <IconButton className="primary" type="submit" disabled={!protocols.length} icon={<Check size={18} />}>
-          Save
-        </IconButton>
+          <button className="button add-assignee-button" type="button" onClick={() => setAssignees((current) => [...current, emptyAssigneeDraft()])}>
+            <UserPlus size={18} />
+            <span>Add person</span>
+          </button>
+        </div>
       </form>
     </div>
   );
@@ -1866,10 +2175,7 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
   const [todos, setTodos] = useState<Todo[]>([]);
   const [entryOpen, setEntryOpen] = useState(openEntryOnMount);
   const [todoOpen, setTodoOpen] = useState(false);
-  const [todoBody, setTodoBody] = useState("");
-  const [todoDue, setTodoDue] = useState("");
-  const [todoPersonName, setTodoPersonName] = useState("");
-  const [todoRole, setTodoRole] = useState("");
+  const [editingTodo, setEditingTodo] = useState<Todo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -1902,25 +2208,6 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
       body: JSON.stringify({ done: todo.done ? 0 : 1 }),
     });
     await load();
-  }
-
-  async function addTodo(event: React.FormEvent) {
-    event.preventDefault();
-    setError(null);
-    try {
-      await apiJson(`/api/protocols/${id}/todos`, {
-        method: "POST",
-        body: JSON.stringify({ body: todoBody, due_date: todoDue, person_name: todoPersonName, person_role: todoRole }),
-      });
-      setTodoBody("");
-      setTodoDue("");
-      setTodoPersonName("");
-      setTodoRole("");
-      setTodoOpen(false);
-      await load();
-    } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "Could not add to-do");
-    }
   }
 
   if (loading) return <Loading />;
@@ -1990,73 +2277,34 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
         {!todos.length ? <Empty>No to-dos.</Empty> : null}
         <div className="todo-list">
           {[...openTodos, ...doneTodos].map((todo) => (
-            <label className={`todo ${todo.done ? "done" : ""}`} key={todo.id}>
-              <input type="checkbox" checked={Boolean(todo.done)} onChange={() => toggleTodo(todo)} />
+            <article className={`todo ${todo.done ? "done" : ""}`} key={todo.id} onClick={() => setEditingTodo(todo)}>
+              <input
+                type="checkbox"
+                checked={Boolean(todo.done)}
+                onChange={() => toggleTodo(todo)}
+                onClick={(event) => event.stopPropagation()}
+              />
               <span>
                 <strong>{todo.body}</strong>
                 <DeadlineBadge value={todo.due_date} />
                 <TodoPersonBadge todo={todo} />
               </span>
-            </label>
+            </article>
           ))}
         </div>
       </section>
 
       {entryOpen ? <EntrySheet protocolId={id} onClose={() => setEntryOpen(false)} onSaved={load} /> : null}
       {todoOpen ? (
-        <div className="sheet-backdrop">
-          <form className="sheet form" onSubmit={addTodo}>
-            <div className="section-heading">
-              <h2>Add to-do</h2>
-              <button type="button" className="icon-only" onClick={() => setTodoOpen(false)} aria-label="Close" title="Close">
-                <X size={20} />
-              </button>
-            </div>
-            <label>
-              To-do
-              <input value={todoBody} onChange={(event) => setTodoBody(event.target.value)} required />
-            </label>
-            <label>
-              Due
-              <input type="date" value={todoDue} onChange={(event) => setTodoDue(event.target.value)} />
-            </label>
-            <label>
-              Person
-              <input
-                autoComplete="off"
-                placeholder="Type a name"
-                value={todoPersonName}
-                onChange={(event) => {
-                  setTodoPersonName(event.target.value);
-                  if (!event.target.value.trim()) setTodoRole("");
-                }}
-              />
-            </label>
-            {todoPersonName.trim() ? (
-              <div className="field-group">
-                <span className="field-label">Role</span>
-                <div className="rasci-control" role="group" aria-label="RASCI role">
-                  {RASCI_ROLES.map((role) => (
-                    <button
-                      aria-pressed={todoRole === role.value}
-                      className={`role-chip ${todoRole === role.value ? "active" : ""}`}
-                      key={role.value}
-                      onClick={() => setTodoRole((current) => (current === role.value ? "" : role.value))}
-                      title={role.label}
-                      type="button"
-                    >
-                      {role.value}
-                    </button>
-                  ))}
-                </div>
-                <span className="helper-text">{todoRole ? roleLabel(todoRole) : "Optional"}</span>
-              </div>
-            ) : null}
-            <IconButton className="primary" type="submit" icon={<Check size={18} />}>
-              Save
-            </IconButton>
-          </form>
-        </div>
+        <TodoSheet fixedProtocolId={id} onClose={() => setTodoOpen(false)} onSaved={load} />
+      ) : null}
+      {editingTodo ? (
+        <TodoSheet
+          fixedProtocolId={editingTodo.protocol_id}
+          onClose={() => setEditingTodo(null)}
+          onSaved={load}
+          todo={editingTodo}
+        />
       ) : null}
     </section>
   );

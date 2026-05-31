@@ -440,6 +440,12 @@ h3 {
   color: var(--danger);
 }
 
+.icon-only.primary-icon {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
 .unstyled {
   width: 100%;
   padding: 0;
@@ -925,6 +931,103 @@ a:focus-visible {
   overflow: auto;
   padding: 18px;
   border-bottom: 0;
+}
+
+.todo-sheet {
+  height: 90vh;
+  max-height: 90vh;
+}
+
+.sheet-grabber {
+  width: 52px;
+  height: 4px;
+  margin: 0 auto 12px;
+  background: #000;
+}
+
+.assignee-editor-list {
+  display: grid;
+  gap: 10px;
+}
+
+.assignee-editor-row {
+  display: grid;
+  grid-template-columns: 1fr 44px;
+  gap: 8px;
+  align-items: start;
+  border: 1px solid #000;
+  padding: 8px;
+}
+
+.assignee-editor-row .compact-rasci {
+  grid-column: 1 / -1;
+}
+
+.person-picker {
+  position: relative;
+}
+
+.person-picker-menu {
+  position: absolute;
+  right: 0;
+  left: 0;
+  z-index: 30;
+  display: grid;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid #000;
+  border-top: 0;
+  background: #fff;
+}
+
+.person-picker-menu button,
+.person-picker-status {
+  display: grid;
+  gap: 2px;
+  min-height: 44px;
+  border: 0;
+  border-bottom: 1px solid #000;
+  background: #fff;
+  padding: 8px 10px;
+  color: #000;
+  text-align: left;
+}
+
+.person-picker-menu button:last-child,
+.person-picker-status:last-child {
+  border-bottom: 0;
+}
+
+.person-picker-menu button:hover {
+  background: var(--soft);
+}
+
+.person-picker-menu span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 400;
+}
+
+.person-picker-status {
+  color: var(--muted);
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+}
+
+.compact-rasci {
+  grid-template-columns: repeat(5, minmax(34px, 1fr));
+}
+
+.compact-rasci .role-chip {
+  min-height: 38px;
+}
+
+.assignee-remove {
+  min-height: 44px;
+}
+
+.add-assignee-button {
+  width: fit-content;
 }
 
 .file-list {
