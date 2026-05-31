@@ -1865,6 +1865,7 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
   const [entries, setEntries] = useState<Entry[]>([]);
   const [todos, setTodos] = useState<Todo[]>([]);
   const [entryOpen, setEntryOpen] = useState(openEntryOnMount);
+  const [todoOpen, setTodoOpen] = useState(false);
   const [todoBody, setTodoBody] = useState("");
   const [todoDue, setTodoDue] = useState("");
   const [todoPersonName, setTodoPersonName] = useState("");
@@ -1905,15 +1906,21 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
 
   async function addTodo(event: React.FormEvent) {
     event.preventDefault();
-    await apiJson(`/api/protocols/${id}/todos`, {
-      method: "POST",
-      body: JSON.stringify({ body: todoBody, due_date: todoDue, person_name: todoPersonName, person_role: todoRole }),
-    });
-    setTodoBody("");
-    setTodoDue("");
-    setTodoPersonName("");
-    setTodoRole("");
-    await load();
+    setError(null);
+    try {
+      await apiJson(`/api/protocols/${id}/todos`, {
+        method: "POST",
+        body: JSON.stringify({ body: todoBody, due_date: todoDue, person_name: todoPersonName, person_role: todoRole }),
+      });
+      setTodoBody("");
+      setTodoDue("");
+      setTodoPersonName("");
+      setTodoRole("");
+      setTodoOpen(false);
+      await load();
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Could not add to-do");
+    }
   }
 
   if (loading) return <Loading />;
@@ -1976,6 +1983,9 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
       <section className="section-block">
         <div className="section-heading">
           <h2>To-dos</h2>
+          <button type="button" className="icon-only" onClick={() => setTodoOpen(true)} aria-label="Add to-do" title="Add to-do">
+            <Plus size={20} />
+          </button>
         </div>
         {!todos.length ? <Empty>No to-dos.</Empty> : null}
         <div className="todo-list">
@@ -1990,54 +2000,64 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
             </label>
           ))}
         </div>
-        <form className="form inline-form" onSubmit={addTodo}>
-          <label>
-            To-do
-            <input value={todoBody} onChange={(event) => setTodoBody(event.target.value)} required />
-          </label>
-          <label>
-            Due
-            <input type="date" value={todoDue} onChange={(event) => setTodoDue(event.target.value)} />
-          </label>
-          <label>
-            Person
-            <input
-              autoComplete="off"
-              placeholder="Type a name"
-              value={todoPersonName}
-              onChange={(event) => {
-                setTodoPersonName(event.target.value);
-                if (!event.target.value.trim()) setTodoRole("");
-              }}
-            />
-          </label>
-          {todoPersonName.trim() ? (
-            <div className="field-group">
-              <span className="field-label">Role</span>
-              <div className="rasci-control" role="group" aria-label="RASCI role">
-                {RASCI_ROLES.map((role) => (
-                  <button
-                    aria-pressed={todoRole === role.value}
-                    className={`role-chip ${todoRole === role.value ? "active" : ""}`}
-                    key={role.value}
-                    onClick={() => setTodoRole((current) => (current === role.value ? "" : role.value))}
-                    title={role.label}
-                    type="button"
-                  >
-                    {role.value}
-                  </button>
-                ))}
-              </div>
-              <span className="helper-text">{todoRole ? roleLabel(todoRole) : "Optional"}</span>
-            </div>
-          ) : null}
-          <IconButton type="submit" icon={<Plus size={18} />}>
-            Add
-          </IconButton>
-        </form>
       </section>
 
       {entryOpen ? <EntrySheet protocolId={id} onClose={() => setEntryOpen(false)} onSaved={load} /> : null}
+      {todoOpen ? (
+        <div className="sheet-backdrop">
+          <form className="sheet form" onSubmit={addTodo}>
+            <div className="section-heading">
+              <h2>Add to-do</h2>
+              <button type="button" className="icon-only" onClick={() => setTodoOpen(false)} aria-label="Close" title="Close">
+                <X size={20} />
+              </button>
+            </div>
+            <label>
+              To-do
+              <input value={todoBody} onChange={(event) => setTodoBody(event.target.value)} required />
+            </label>
+            <label>
+              Due
+              <input type="date" value={todoDue} onChange={(event) => setTodoDue(event.target.value)} />
+            </label>
+            <label>
+              Person
+              <input
+                autoComplete="off"
+                placeholder="Type a name"
+                value={todoPersonName}
+                onChange={(event) => {
+                  setTodoPersonName(event.target.value);
+                  if (!event.target.value.trim()) setTodoRole("");
+                }}
+              />
+            </label>
+            {todoPersonName.trim() ? (
+              <div className="field-group">
+                <span className="field-label">Role</span>
+                <div className="rasci-control" role="group" aria-label="RASCI role">
+                  {RASCI_ROLES.map((role) => (
+                    <button
+                      aria-pressed={todoRole === role.value}
+                      className={`role-chip ${todoRole === role.value ? "active" : ""}`}
+                      key={role.value}
+                      onClick={() => setTodoRole((current) => (current === role.value ? "" : role.value))}
+                      title={role.label}
+                      type="button"
+                    >
+                      {role.value}
+                    </button>
+                  ))}
+                </div>
+                <span className="helper-text">{todoRole ? roleLabel(todoRole) : "Optional"}</span>
+              </div>
+            ) : null}
+            <IconButton className="primary" type="submit" icon={<Check size={18} />}>
+              Save
+            </IconButton>
+          </form>
+        </div>
+      ) : null}
     </section>
   );
 }
