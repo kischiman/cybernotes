@@ -1,6 +1,6 @@
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, NavLink, Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { BrowserRouter, Navigate, NavLink, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import {
   Archive,
   ArrowLeft,
@@ -10,6 +10,7 @@ import {
   ChevronDown,
   ClipboardList,
   Download,
+  Folder,
   GripVertical,
   Eye,
   History,
@@ -300,10 +301,12 @@ function App() {
       <div className="app-shell">
         <main className="main">
           <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/today" element={<TodayScreen />} />
+            <Route path="/" element={<TodayScreen />} />
+            <Route path="/today" element={<Navigate to="/" replace />} />
+            <Route path="/protocols" element={<Dashboard />} />
             <Route path="/wins" element={<WinsScreen />} />
-            <Route path="/vision" element={<VisionScreen />} />
+            <Route path="/projects" element={<VisionScreen />} />
+            <Route path="/vision" element={<Navigate to="/projects" replace />} />
             <Route path="/archive" element={<ArchiveScreen />} />
             <Route path="/archive/:id" element={<ProjectScreen readOnly />} />
             <Route path="/projects/new" element={<ProjectForm />} />
@@ -322,21 +325,17 @@ function App() {
 function BottomNav() {
   return (
     <nav className="bottom-nav" aria-label="Primary">
-      <NavLink to="/today">
+      <NavLink to="/">
         <CalendarDays size={20} />
         <span>Today</span>
       </NavLink>
-      <NavLink to="/">
-        <Home size={20} />
-        <span>Dashboard</span>
+      <NavLink to="/protocols">
+        <ClipboardList size={20} />
+        <span>Protocols</span>
       </NavLink>
-      <NavLink to="/vision">
-        <Eye size={20} />
-        <span>Vision</span>
-      </NavLink>
-      <NavLink to="/archive">
-        <Archive size={20} />
-        <span>Archive</span>
+      <NavLink to="/projects">
+        <Folder size={20} />
+        <span>Projects</span>
       </NavLink>
     </nav>
   );

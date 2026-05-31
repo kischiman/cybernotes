@@ -785,7 +785,7 @@ a:focus-visible {
   left: 0;
   z-index: 10;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   border-top: 1px solid #000;
   background: #fff;
 }
