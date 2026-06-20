@@ -46,6 +46,28 @@ CREATE TABLE IF NOT EXISTS photos (
   created_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS protocol_cycles (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  protocol_id TEXT REFERENCES protocols(id) ON DELETE SET NULL,
+  protocol_title TEXT NOT NULL,
+  synthesis TEXT,
+  notes TEXT,
+  results TEXT,
+  completed_at TEXT,
+  created_at TEXT,
+  updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS protocol_cycle_photos (
+  id TEXT PRIMARY KEY,
+  cycle_id TEXT NOT NULL REFERENCES protocol_cycles(id) ON DELETE CASCADE,
+  r2_key TEXT NOT NULL,
+  r2_url TEXT NOT NULL,
+  caption TEXT,
+  created_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS people (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -61,6 +83,9 @@ CREATE TABLE IF NOT EXISTS todos (
   body TEXT NOT NULL,
   done INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
   due_date TEXT,
+  recurrence TEXT NOT NULL DEFAULT 'one_off' CHECK (recurrence IN ('one_off', 'recurring')),
+  recurrence_frequency TEXT CHECK (recurrence_frequency IN ('daily', 'weekly', 'monthly') OR recurrence_frequency IS NULL),
+  recurrence_day INTEGER,
   person_id TEXT REFERENCES people(id) ON DELETE SET NULL,
   person_role TEXT,
   position INTEGER,
@@ -118,11 +143,34 @@ CREATE TABLE IF NOT EXISTS wins (
   updated_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS articles (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  tags TEXT,
+  consensus_body TEXT,
+  websearch_body TEXT,
+  europepmc_body TEXT,
+  gossip_body TEXT,
+  sources_consensus TEXT,
+  sources_websearch TEXT,
+  sources_europepmc TEXT,
+  sources_gossip TEXT,
+  prompt_consensus TEXT,
+  prompt_websearch TEXT,
+  prompt_europepmc TEXT,
+  prompt_gossip TEXT,
+  created_at TEXT,
+  updated_at TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
 CREATE INDEX IF NOT EXISTS idx_protocols_project_id ON protocols(project_id);
 CREATE INDEX IF NOT EXISTS idx_protocols_deadline ON protocols(deadline);
 CREATE INDEX IF NOT EXISTS idx_entries_protocol_id_created_at ON entries(protocol_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_photos_entry_id ON photos(entry_id);
+CREATE INDEX IF NOT EXISTS idx_protocol_cycles_project_id_completed_at ON protocol_cycles(project_id, completed_at);
+CREATE INDEX IF NOT EXISTS idx_protocol_cycles_protocol_id ON protocol_cycles(protocol_id);
+CREATE INDEX IF NOT EXISTS idx_protocol_cycle_photos_cycle_id ON protocol_cycle_photos(cycle_id);
 CREATE INDEX IF NOT EXISTS idx_people_project_id ON people(project_id);
 CREATE INDEX IF NOT EXISTS idx_people_directory_project_people ON people(directory_id);
 CREATE INDEX IF NOT EXISTS idx_people_directory_name ON people_directory(name);
@@ -136,3 +184,4 @@ CREATE INDEX IF NOT EXISTS idx_checkin_templates_session_position ON checkin_tem
 CREATE INDEX IF NOT EXISTS idx_checkin_answers_entry_id_position ON checkin_answers(entry_id, position);
 CREATE INDEX IF NOT EXISTS idx_wins_created_at ON wins(created_at);
 CREATE INDEX IF NOT EXISTS idx_wins_project_id ON wins(project_id);
+CREATE INDEX IF NOT EXISTS idx_articles_updated_at ON articles(updated_at);

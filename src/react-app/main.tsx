@@ -17,10 +17,13 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { BrowserRouter, Navigate, NavLink, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import {
   Archive,
   ArrowLeft,
+  BookOpen,
   Camera,
   CalendarDays,
   Check,
@@ -33,8 +36,13 @@ import {
   History,
   Home,
   LogOut,
+  Mic,
+  Pencil,
   Plus,
+  Send,
   Settings,
+  Sparkles,
+  Square,
   Trash2,
   Trophy,
   UserPlus,
@@ -79,6 +87,28 @@ type Photo = {
   created_at: string;
 };
 
+type ProtocolCyclePhoto = {
+  id: string;
+  cycle_id: string;
+  r2_url: string;
+  caption: string | null;
+  created_at: string;
+};
+
+type ProtocolCycle = {
+  id: string;
+  project_id: string;
+  protocol_id: string | null;
+  protocol_title: string;
+  synthesis: string | null;
+  notes: string | null;
+  results: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  photos: ProtocolCyclePhoto[];
+};
+
 type Entry = {
   id: string;
   protocol_id: string;
@@ -102,6 +132,9 @@ type Todo = {
   body: string;
   done: 0 | 1;
   due_date: string | null;
+  recurrence: "one_off" | "recurring";
+  recurrence_frequency: "daily" | "weekly" | "monthly" | null;
+  recurrence_day: number | null;
   person_id: string | null;
   position: number | null;
   person_name?: string | null;
@@ -183,12 +216,55 @@ const RASCI_ROLES = [
   { value: "I", label: "Informed" },
 ];
 
+const TODO_RECURRENCE_OPTIONS = [
+  { value: "one_off", label: "One-off" },
+  { value: "recurring", label: "Recurring" },
+] as const;
+
+const TODO_RECURRENCE_FREQUENCIES = [
+  { value: "daily", label: "Daily" },
+  { value: "weekly", label: "Weekly" },
+  { value: "monthly", label: "Monthly" },
+] as const;
+
+const WEEKDAY_OPTIONS = [
+  { value: 0, label: "Sunday" },
+  { value: 1, label: "Monday" },
+  { value: 2, label: "Tuesday" },
+  { value: 3, label: "Wednesday" },
+  { value: 4, label: "Thursday" },
+  { value: 5, label: "Friday" },
+  { value: 6, label: "Saturday" },
+];
+
+const MONTH_DAY_OPTIONS = Array.from({ length: 31 }, (_, index) => index + 1);
+
+function shortWeekday(value: number | null | undefined) {
+  return WEEKDAY_OPTIONS.find((day) => day.value === value)?.label.slice(0, 3) || "";
+}
+
+function todoRecurrenceLabel(todo: Pick<Todo, "recurrence" | "recurrence_frequency" | "recurrence_day">) {
+  if (todo.recurrence !== "recurring") return "One-off";
+  if (todo.recurrence_frequency === "weekly") return `Weekly${shortWeekday(todo.recurrence_day) ? ` ${shortWeekday(todo.recurrence_day)}` : ""}`;
+  if (todo.recurrence_frequency === "monthly") return `Monthly${todo.recurrence_day ? ` day ${todo.recurrence_day}` : ""}`;
+  return "Daily";
+}
+
 function roleLabel(value: string | null | undefined) {
   return RASCI_ROLES.find((role) => role.value === value)?.label || "";
 }
 
 const GANTT_PROJECT_COLORS = ["#0066FF", "#00A36C", "#E85D04", "#7B2FBE", "#C9184A", "#0096C7", "#606C38", "#AE2012"];
-const GANTT_DAY_WIDTH = 60;
+const GANTT_MIN_DAY_WIDTH = 48;
+const GANTT_MAX_DAY_WIDTH = 80;
+const GANTT_VISIBLE_COLUMNS = 6;
+
+function ganttColumnWidth() {
+  return Math.min(
+    GANTT_MAX_DAY_WIDTH,
+    Math.max(GANTT_MIN_DAY_WIDTH, Math.floor(window.innerWidth / GANTT_VISIBLE_COLUMNS)),
+  );
+}
 
 async function apiJson<T>(path: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
@@ -216,6 +292,63 @@ async function apiText(path: string) {
   }
   if (!response.ok) throw new Error(response.statusText);
   return await response.text();
+}
+
+// Voice memos are meant to be short; auto-stop after this many seconds so a
+// recording can't quietly grow past Gemini's inline-audio budget.
+const MAX_RECORDING_SECONDS = 300;
+
+// MediaRecorder emits WebM (Chrome) or MP4/AAC (Safari); Gemini's audio support
+// is more reliable with WAV, so we decode whatever was recorded and re-encode it
+// to 16 kHz mono 16-bit PCM WAV — a format Gemini accepts and that keeps short
+// memos small (~32 KB/s).
+async function recordingToWav(blob: Blob): Promise<Blob> {
+  const AudioCtx: typeof AudioContext =
+    window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+  const decodeCtx = new AudioCtx();
+  let decoded: AudioBuffer;
+  try {
+    decoded = await decodeCtx.decodeAudioData(await blob.arrayBuffer());
+  } finally {
+    void decodeCtx.close();
+  }
+  const targetRate = 16000;
+  const length = Math.max(1, Math.ceil(decoded.duration * targetRate));
+  const offline = new OfflineAudioContext(1, length, targetRate);
+  const source = offline.createBufferSource();
+  source.buffer = decoded;
+  source.connect(offline.destination);
+  source.start();
+  const rendered = await offline.startRendering();
+  return encodeWav(rendered.getChannelData(0), targetRate);
+}
+
+// Encode mono float samples (-1..1) as a 16-bit PCM WAV blob.
+function encodeWav(samples: Float32Array, sampleRate: number): Blob {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  const writeString = (offset: number, value: string) => {
+    for (let i = 0; i < value.length; i += 1) view.setUint8(offset + i, value.charCodeAt(i));
+  };
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true); // PCM chunk size
+  view.setUint16(20, 1, true); // PCM format
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); // byte rate
+  view.setUint16(32, 2, true); // block align
+  view.setUint16(34, 16, true); // bits per sample
+  writeString(36, "data");
+  view.setUint32(40, samples.length * 2, true);
+  let offset = 44;
+  for (let i = 0; i < samples.length; i += 1, offset += 2) {
+    const clamped = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
+  }
+  return new Blob([buffer], { type: "audio/wav" });
 }
 
 function useSafeId() {
@@ -341,6 +474,66 @@ function Empty({ children }: { children: React.ReactNode }) {
   return <div className="empty">{children}</div>;
 }
 
+function BottomSheet({
+  children,
+  className = "",
+  onClose,
+  onSubmit,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  onClose: () => void;
+  onSubmit?: (event: React.FormEvent<HTMLFormElement>) => void;
+}) {
+  const touchStartY = useRef<number | null>(null);
+
+  const startTouch = (event: React.TouchEvent) => {
+    touchStartY.current = event.touches[0]?.clientY ?? null;
+  };
+  const endTouch = (event: React.TouchEvent) => {
+    const startY = touchStartY.current;
+    const endY = event.changedTouches[0]?.clientY ?? startY;
+    touchStartY.current = null;
+    if (startY !== null && endY !== null && endY - startY > 80) onClose();
+  };
+
+  const content = (
+    <>
+      <div className="sheet-grabber" aria-hidden="true" />
+      {children}
+    </>
+  );
+
+  if (onSubmit) {
+    return (
+      <div className="sheet-backdrop" onClick={onClose}>
+        <form
+          className={`sheet ${className}`}
+          onClick={(event) => event.stopPropagation()}
+          onSubmit={onSubmit}
+          onTouchEnd={endTouch}
+          onTouchStart={startTouch}
+        >
+          {content}
+        </form>
+      </div>
+    );
+  }
+
+  return (
+    <div className="sheet-backdrop" onClick={onClose}>
+      <div
+        className={`sheet ${className}`}
+        onClick={(event) => event.stopPropagation()}
+        onTouchEnd={endTouch}
+        onTouchStart={startTouch}
+      >
+        {content}
+      </div>
+    </div>
+  );
+}
+
 function IconButton({
   children,
   icon,
@@ -352,6 +545,17 @@ function IconButton({
       <span>{children}</span>
     </button>
   );
+}
+
+function Toast({ message, onDone }: { message: string | null; onDone: () => void }) {
+  useEffect(() => {
+    if (!message) return;
+    const timer = window.setTimeout(onDone, 3000);
+    return () => window.clearTimeout(timer);
+  }, [message]);
+
+  if (!message) return null;
+  return <div className="toast">{message}</div>;
 }
 
 function BackButton() {
@@ -381,6 +585,507 @@ async function fetchActiveProtocolSummaries() {
   });
 }
 
+// ============================================================
+// Research — research a topic across four backends and draft a cited article.
+// Ported from the SocialMediaAgent encyclopedia generator. Desktop gets a
+// two-pane (list | article) layout; mobile falls back to a single column.
+// ============================================================
+
+type ArticleMode = "consensus" | "websearch" | "europepmc" | "gossip";
+
+type Article = {
+  id: string;
+  title: string;
+  tags: string[];
+  consensus_body: string;
+  websearch_body: string;
+  europepmc_body: string;
+  gossip_body: string;
+  sources_consensus: string[];
+  sources_websearch: string[];
+  sources_europepmc: string[];
+  sources_gossip: string[];
+  prompt_consensus: string;
+  prompt_websearch: string;
+  prompt_europepmc: string;
+  prompt_gossip: string;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type ResearchResponse = { body: string; tags: string[]; sources: string[]; mode: ArticleMode; prompt: string };
+
+const ARTICLE_MODES: { mode: ArticleMode; label: string; hint: string }[] = [
+  { mode: "consensus", label: "Consensus", hint: "Peer-reviewed bias via Google grounding" },
+  { mode: "europepmc", label: "Europe PMC", hint: "Peer-reviewed biomedical papers (DOI / PubMed)" },
+  { mode: "websearch", label: "WebSearch", hint: "Open-web sources via Google grounding" },
+  { mode: "gossip", label: "Gossip", hint: "The dramatic / viral angle" },
+];
+
+function modeBody(article: Article, mode: ArticleMode): string {
+  return article[`${mode}_body` as const];
+}
+
+function modeSources(article: Article, mode: ArticleMode): string[] {
+  return article[`sources_${mode}` as const];
+}
+
+function modePrompt(article: Article, mode: ArticleMode): string {
+  return article[`prompt_${mode}` as const];
+}
+
+function articleHasContent(article: Article, mode: ArticleMode): boolean {
+  return modeBody(article, mode).trim().length > 0 || modeSources(article, mode).length > 0;
+}
+
+function ResearchScreen() {
+  const [articles, setArticles] = useState<Article[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [newTitle, setNewTitle] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load(selectAfter?: string) {
+    setLoading(true);
+    setError(null);
+    try {
+      const { articles: next } = await apiJson<{ articles: Article[] }>("/api/articles");
+      setArticles(next);
+      setSelectedId((current) => selectAfter ?? current ?? next[0]?.id ?? null);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Could not load articles");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function createArticle(event: React.FormEvent) {
+    event.preventDefault();
+    const title = newTitle.trim();
+    if (!title) return;
+    setCreating(true);
+    setError(null);
+    try {
+      const { article } = await apiJson<{ article: Article }>("/api/articles", {
+        method: "POST",
+        body: JSON.stringify({ title }),
+      });
+      setNewTitle("");
+      await load(article.id);
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : "Could not create article");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  function handleSaved(updated: Article) {
+    setArticles((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+  }
+
+  async function handleDeleted(id: string) {
+    setArticles((current) => current.filter((item) => item.id !== id));
+    setSelectedId((current) => (current === id ? null : current));
+  }
+
+  const selected = useMemo(() => articles.find((item) => item.id === selectedId) ?? null, [articles, selectedId]);
+
+  if (loading) return <Loading />;
+
+  return (
+    <section className="research-breakout">
+      <header className="topbar compact">
+        <BackButton />
+        <div>
+          <p className="eyebrow">Knowledge</p>
+          <h1>Research</h1>
+        </div>
+      </header>
+      <ErrorBanner message={error} />
+
+      <div className="research-grid">
+        <aside className="research-list">
+          <form className="research-new" onSubmit={createArticle}>
+            <input
+              value={newTitle}
+              onChange={(event) => setNewTitle(event.target.value)}
+              placeholder="New topic, e.g. BPC-157"
+              aria-label="New article title"
+            />
+            <IconButton className="primary" type="submit" disabled={creating || !newTitle.trim()} icon={<Plus size={16} />}>
+              {creating ? "Adding…" : "Add"}
+            </IconButton>
+          </form>
+          {!articles.length ? (
+            <Empty>No articles yet. Add a topic to research.</Empty>
+          ) : (
+            <ul className="research-list-items">
+              {articles.map((article) => {
+                const filled = ARTICLE_MODES.filter(({ mode }) => articleHasContent(article, mode)).length;
+                return (
+                  <li key={article.id}>
+                    <button
+                      type="button"
+                      className={`research-list-item${article.id === selectedId ? " active" : ""}`}
+                      onClick={() => setSelectedId(article.id)}
+                    >
+                      <span className="research-list-title">{article.title || "Untitled"}</span>
+                      <span className="research-list-meta">
+                        {filled ? `${filled}/4 researched` : "empty"}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </aside>
+
+        <div className="research-main">
+          {!selected ? (
+            <Empty>Pick an article on the left, or add a new topic.</Empty>
+          ) : (
+            <ArticlePane key={selected.id} article={selected} onSaved={handleSaved} onDeleted={handleDeleted} />
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ArticlePane({
+  article,
+  onSaved,
+  onDeleted,
+}: {
+  article: Article;
+  onSaved: (article: Article) => void;
+  onDeleted: (id: string) => void;
+}) {
+  const [draft, setDraft] = useState<Article>(article);
+  const [activeMode, setActiveMode] = useState<ArticleMode>(
+    ARTICLE_MODES.find(({ mode }) => articleHasContent(article, mode))?.mode ?? "consensus",
+  );
+  const [direction, setDirection] = useState("");
+  const [researching, setResearching] = useState<ArticleMode | null>(null);
+  const [editingText, setEditingText] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDraft(article);
+  }, [article]);
+
+  async function persist(next: Article) {
+    setSaving(true);
+    setError(null);
+    try {
+      const { article: saved } = await apiJson<{ article: Article }>(`/api/articles/${next.id}`, {
+        method: "PUT",
+        body: JSON.stringify(next),
+      });
+      setDraft(saved);
+      onSaved(saved);
+      return saved;
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Could not save");
+      throw saveError;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function runResearch(mode: ArticleMode) {
+    if (!draft.title.trim()) {
+      setError("Give the article a title first");
+      return;
+    }
+    setResearching(mode);
+    setError(null);
+    try {
+      const result = await apiJson<ResearchResponse>("/api/articles/research", {
+        method: "POST",
+        body: JSON.stringify({ title: draft.title, prompt: direction, mode }),
+      });
+      const mergedTags = Array.from(new Set([...draft.tags, ...result.tags]));
+      const next: Article = {
+        ...draft,
+        tags: mergedTags,
+        [`${mode}_body`]: result.body,
+        [`sources_${mode}`]: result.sources,
+        [`prompt_${mode}`]: result.prompt ?? direction,
+      };
+      setActiveMode(mode);
+      await persist(next);
+    } catch (researchError) {
+      setError(researchError instanceof Error ? researchError.message : "Research failed");
+    } finally {
+      setResearching(null);
+    }
+  }
+
+  async function remove() {
+    if (!window.confirm(`Delete "${draft.title}"?`)) return;
+    try {
+      await apiJson(`/api/articles/${draft.id}`, { method: "DELETE" });
+      onDeleted(draft.id);
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Could not delete");
+    }
+  }
+
+  const body = modeBody(draft, activeMode);
+  const sources = modeSources(draft, activeMode);
+  const usedPrompt = modePrompt(draft, activeMode);
+
+  return (
+    <article className="research-article">
+      <div className="research-article-head">
+        <input
+          className="research-title-input"
+          value={draft.title}
+          onChange={(event) => setDraft({ ...draft, title: event.target.value })}
+          onBlur={() => {
+            if (draft.title.trim() && draft.title !== article.title) void persist(draft);
+          }}
+          placeholder="Article title"
+          aria-label="Article title"
+        />
+        <button type="button" className="button danger ghost" onClick={remove}>
+          <Trash2 size={16} />
+        </button>
+      </div>
+
+      <label className="research-tags">
+        <span>Tags</span>
+        <input
+          value={draft.tags.join(", ")}
+          onChange={(event) =>
+            setDraft({ ...draft, tags: event.target.value.split(",").map((tag) => tag.trim()).filter(Boolean) })
+          }
+          onBlur={() => void persist(draft)}
+          placeholder="comma, separated, tags"
+        />
+      </label>
+
+      <div className="research-runbar">
+        <input
+          value={direction}
+          onChange={(event) => setDirection(event.target.value)}
+          placeholder="Optional direction, e.g. focus on injury recovery"
+          aria-label="Research direction"
+        />
+        <div className="research-run-buttons">
+          {ARTICLE_MODES.map(({ mode, label }) => (
+            <button
+              key={mode}
+              type="button"
+              className={`button small mode-${mode}`}
+              disabled={researching !== null || saving || !draft.title.trim()}
+              title={ARTICLE_MODES.find((m) => m.mode === mode)?.hint}
+              onClick={() => runResearch(mode)}
+            >
+              <Sparkles size={14} />
+              {researching === mode
+                ? "Researching…"
+                : articleHasContent(draft, mode)
+                ? `Rerun ${label}`
+                : label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p className="research-note">
+        Running a mode replaces that tab&apos;s draft and sources, then auto-saves. {saving ? "Saving…" : ""}
+      </p>
+      {error && <ErrorBanner message={error} />}
+
+      <div className="research-tabs" role="tablist">
+        {ARTICLE_MODES.map(({ mode, label }) => (
+          <button
+            key={mode}
+            type="button"
+            role="tab"
+            aria-selected={activeMode === mode}
+            className={`research-tab${activeMode === mode ? " active" : ""}`}
+            onClick={() => {
+              setActiveMode(mode);
+              setEditingText(false);
+            }}
+          >
+            {label}
+            {!articleHasContent(draft, mode) && <span className="research-tab-empty">empty</span>}
+          </button>
+        ))}
+      </div>
+
+      {usedPrompt && (
+        <p className="research-used-direction">
+          <strong>Direction used:</strong> {usedPrompt}
+        </p>
+      )}
+
+      <div className="research-article-actions">
+        <button type="button" className="button small ghost" onClick={() => setEditingText((value) => !value)}>
+          <Pencil size={14} /> {editingText ? "Preview" : "Edit text"}
+        </button>
+        {body && (
+          <button
+            type="button"
+            className="button small ghost"
+            onClick={() => navigator.clipboard?.writeText(articleAsMarkdown(body, sources))}
+          >
+            <Download size={14} /> Copy markdown
+          </button>
+        )}
+      </div>
+
+      {editingText ? (
+        <div className="research-edit">
+          <textarea
+            value={body}
+            onChange={(event) => setDraft({ ...draft, [`${activeMode}_body`]: event.target.value } as Article)}
+            rows={18}
+            placeholder="Article body in markdown. Use [^1], [^2] markers tied to the sources below."
+          />
+          <label>
+            <span>Sources (one per line)</span>
+            <textarea
+              value={sources.join("\n")}
+              onChange={(event) =>
+                setDraft({
+                  ...draft,
+                  [`sources_${activeMode}`]: event.target.value.split("\n").map((line) => line.trim()).filter(Boolean),
+                } as Article)
+              }
+              rows={4}
+            />
+          </label>
+          <div className="research-edit-actions">
+            <IconButton className="primary" type="button" disabled={saving} onClick={() => void persist(draft)} icon={<Check size={16} />}>
+              {saving ? "Saving…" : "Save"}
+            </IconButton>
+            <button type="button" className="button ghost" onClick={() => setDraft(article)}>
+              Revert
+            </button>
+          </div>
+        </div>
+      ) : body.trim() ? (
+        <>
+          <ArticleMarkdown>{withFootnotes(body, sources)}</ArticleMarkdown>
+          <ArticleSources sources={sources} />
+        </>
+      ) : (
+        <Empty>
+          This tab is empty. Run <strong>{ARTICLE_MODES.find((m) => m.mode === activeMode)?.label}</strong> research above, or edit the text manually.
+        </Empty>
+      )}
+    </article>
+  );
+}
+
+// Pull every URL out of a citation string so it can be rendered as a link with
+// the citation text preserved.
+const SOURCE_URL_RE = /(https?:\/\/[^\s)]+)/g;
+
+function splitSourceText(source: string): { text: string; urls: string[] } {
+  const urls = source.match(SOURCE_URL_RE) ?? [];
+  const text = source.replace(SOURCE_URL_RE, "").replace(/\s+/g, " ").replace(/[—–-]\s*$/, "").trim();
+  return { text, urls };
+}
+
+function ArticleSources({ sources }: { sources: string[] }) {
+  if (!sources.length) return null;
+  return (
+    <section className="research-sources">
+      <h3>Sources</h3>
+      <ol>
+        {sources.map((source, index) => {
+          const { text, urls } = splitSourceText(source);
+          return (
+            <li key={index} id={`user-content-fn-${index + 1}`}>
+              {text && <span>{text} </span>}
+              {urls.map((url, urlIndex) => (
+                <a key={urlIndex} href={url} target="_blank" rel="noopener noreferrer">
+                  {url}
+                </a>
+              ))}
+            </li>
+          );
+        })}
+      </ol>
+    </section>
+  );
+}
+
+// Append GFM footnote definitions so [^N] markers in the body link to the
+// matching source.
+function withFootnotes(body: string, sources: string[]): string {
+  if (!sources.length) return body;
+  const defs = sources
+    .map((source, index) => {
+      const text = /^https?:\/\//.test(source) ? `<${source}>` : source;
+      return `[^${index + 1}]: ${text}`;
+    })
+    .join("\n");
+  return `${body}\n\n${defs}`;
+}
+
+function articleAsMarkdown(body: string, sources: string[]): string {
+  if (!sources.length) return body;
+  return `${body}\n\n## Sources\n${sources.map((source, index) => `${index + 1}. ${source}`).join("\n")}`;
+}
+
+function ArticleMarkdown({ children }: { children: string }) {
+  return (
+    <div className="markdown-body">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ children, href }) => {
+            const target = typeof href === "string" ? href : "";
+            const isFootnoteRef = target.startsWith("#user-content-fn-");
+            const isFootnoteBack = target.startsWith("#user-content-fnref-");
+            if (isFootnoteRef) {
+              return (
+                <sup>
+                  <a href={target}>{children}</a>
+                </sup>
+              );
+            }
+            if (isFootnoteBack) {
+              return (
+                <a href={target} className="footnote-back">
+                  ↩
+                </a>
+              );
+            }
+            const external = /^https?:\/\//.test(target);
+            return (
+              <a href={target} target={external ? "_blank" : undefined} rel={external ? "noopener noreferrer" : undefined}>
+                {children}
+              </a>
+            );
+          },
+          section: ({ children, ...props }) => {
+            // GFM emits its own footnote list; we render our Sources panel instead.
+            if ((props as Record<string, unknown>)["data-footnotes"] !== undefined) return null;
+            return <section>{children}</section>;
+          },
+        }}
+      >
+        {children}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
 function App() {
   return (
     <BrowserRouter>
@@ -392,6 +1097,7 @@ function App() {
             <Route path="/protocols" element={<ProtocolsGanttScreen />} />
             <Route path="/wins" element={<WinsScreen />} />
             <Route path="/projects" element={<ProjectsScreen />} />
+            <Route path="/research" element={<ResearchScreen />} />
             <Route path="/people" element={<PeopleDirectoryScreen />} />
             <Route path="/vision" element={<Navigate to="/projects" replace />} />
             <Route path="/archive" element={<ArchiveScreen />} />
@@ -423,6 +1129,10 @@ function BottomNav() {
       <NavLink to="/projects">
         <Folder size={20} />
         <span>Projects</span>
+      </NavLink>
+      <NavLink to="/research">
+        <BookOpen size={20} />
+        <span>Research</span>
       </NavLink>
     </nav>
   );
@@ -601,6 +1311,10 @@ function TodoAssigneeBadges({ todo }: { todo: Todo }) {
   );
 }
 
+function TodoRecurrenceBadge({ todo }: { todo: Todo }) {
+  return <span className={`recurrence-badge ${todo.recurrence === "recurring" ? "is-recurring" : ""}`}>{todoRecurrenceLabel(todo)}</span>;
+}
+
 function DashboardTodoItem({
   completing,
   onDragEnd,
@@ -642,6 +1356,7 @@ function DashboardTodoItem({
         </span>
         <div className="todo-meta-row">
           <DeadlineBadge value={todo.due_date} />
+          <TodoRecurrenceBadge todo={todo} />
           <TodoAssigneeBadges todo={todo} />
         </div>
       </div>
@@ -650,16 +1365,44 @@ function DashboardTodoItem({
 }
 
 function ProtocolsGanttScreen() {
+  const navigate = useNavigate();
   const [protocols, setProtocols] = useState<Protocol[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [columnWidth, setColumnWidth] = useState(ganttColumnWidth);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  async function load() {
+    setLoading(true);
+    setError(null);
+    try {
+      const [protocolData, projectData] = await Promise.all([
+        apiJson<{ protocols: Protocol[] }>("/api/protocols/active"),
+        apiJson<{ projects: Project[] }>("/api/projects?status=active"),
+      ]);
+      setProtocols(protocolData.protocols.filter((protocol) => protocol.deadline));
+      setProjects(projectData.projects);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Could not load protocols");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => {
-    apiJson<{ protocols: Protocol[] }>("/api/protocols/active")
-      .then(({ protocols: nextProtocols }) => setProtocols(nextProtocols.filter((protocol) => protocol.deadline)))
-      .catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Could not load protocols"))
-      .finally(() => setLoading(false));
+    void load();
   }, []);
+
+  useEffect(() => {
+    const updateColumnWidth = () => setColumnWidth(ganttColumnWidth());
+    window.addEventListener("resize", updateColumnWidth);
+    return () => window.removeEventListener("resize", updateColumnWidth);
+  }, []);
+
+  function handleCreated(protocol: Protocol) {
+    navigate(`/protocols/${protocol.id}`);
+  }
 
   if (loading) return <Loading />;
 
@@ -667,7 +1410,8 @@ function ProtocolsGanttScreen() {
   const maxDeadline = maxDateString(...protocols.map((protocol) => protocol.deadline));
   const endDate = maxDateString(addDays(today, 6), maxDeadline);
   const days = buildDateRange(today, endDate);
-  const chartWidth = days.length * GANTT_DAY_WIDTH;
+  const chartWidth = days.length * columnWidth;
+  const dayGridTemplate = `repeat(${days.length}, ${columnWidth}px)`;
   const groups = Array.from(
     protocols.reduce((map, protocol) => {
       const key = protocol.project_id;
@@ -690,6 +1434,9 @@ function ProtocolsGanttScreen() {
           <p className="eyebrow">Timeline</p>
           <h1>Protocols</h1>
         </div>
+        <IconButton className="primary" type="button" onClick={() => setCreateOpen(true)} icon={<Plus size={18} />}>
+          New Protocol
+        </IconButton>
       </header>
       <ErrorBanner message={error} />
       {!protocols.length ? (
@@ -697,7 +1444,7 @@ function ProtocolsGanttScreen() {
       ) : (
         <div className="gantt-scroll" aria-label="Active protocol timeline">
           <div className="gantt-chart" style={{ width: chartWidth }}>
-            <div className="gantt-header" style={{ gridTemplateColumns: `repeat(${days.length}, ${GANTT_DAY_WIDTH}px)` }}>
+            <div className="gantt-header" style={{ gridTemplateColumns: dayGridTemplate }}>
               {days.map((day) => (
                 <div className={`gantt-day ${day === today ? "today" : ""}`} key={day}>
                   {formatGanttDay(day)}
@@ -711,15 +1458,24 @@ function ProtocolsGanttScreen() {
                   <div
                     className="gantt-project-row"
                     style={{
-                      backgroundColor: hexToRgba(group.color, 0.15),
                       borderLeftColor: group.color,
+                      color: group.color,
                       width: chartWidth,
                     }}
                   >
                     {group.projectTitle}
                   </div>
                   {group.protocols.map((protocol) => (
-                    <GanttProtocolRow chartWidth={chartWidth} color={group.color} days={days} key={protocol.id} protocol={protocol} today={today} />
+                    <GanttProtocolRow
+                      chartWidth={chartWidth}
+                      color={group.color}
+                      columnWidth={columnWidth}
+                      dayGridTemplate={dayGridTemplate}
+                      days={days}
+                      key={protocol.id}
+                      protocol={protocol}
+                      today={today}
+                    />
                   ))}
                 </div>
               ))}
@@ -727,19 +1483,112 @@ function ProtocolsGanttScreen() {
           </div>
         </div>
       )}
+      {createOpen ? (
+        <NewProtocolSheet
+          onClose={() => setCreateOpen(false)}
+          onCreated={handleCreated}
+          projects={projects}
+        />
+      ) : null}
     </section>
+  );
+}
+
+function NewProtocolSheet({
+  onClose,
+  onCreated,
+  projects,
+}: {
+  onClose: () => void;
+  onCreated: (protocol: Protocol) => void;
+  projects: Project[];
+}) {
+  const [projectId, setProjectId] = useState(projects[0]?.id || "");
+  const [title, setTitle] = useState("");
+  const [goal, setGoal] = useState("");
+  const [intervention, setIntervention] = useState("");
+  const [metrics, setMetrics] = useState("");
+  const [deadline, setDeadline] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!projectId) return;
+    setError(null);
+    try {
+      const { protocol } = await apiJson<{ protocol: Protocol }>(`/api/projects/${projectId}/protocols`, {
+        method: "POST",
+        body: JSON.stringify({ title, goal, intervention, metrics, deadline }),
+      });
+      onClose();
+      onCreated(protocol);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Could not create protocol");
+    }
+  }
+
+  return (
+    <div className="sheet-backdrop">
+      <form className="sheet form" onSubmit={submit}>
+        <div className="section-heading">
+          <h2>New Protocol</h2>
+          <button type="button" className="icon-only" onClick={onClose} aria-label="Close" title="Close">
+            <X size={20} />
+          </button>
+        </div>
+        <ErrorBanner message={error} />
+        {!projects.length ? <Empty>No active projects.</Empty> : null}
+        <label>
+          Project
+          <select value={projectId} onChange={(event) => setProjectId(event.target.value)} required>
+            {projects.map((project) => (
+              <option value={project.id} key={project.id}>
+                {project.title}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Title
+          <input value={title} onChange={(event) => setTitle(event.target.value)} required />
+        </label>
+        <label>
+          Goal
+          <textarea value={goal} onChange={(event) => setGoal(event.target.value)} rows={3} />
+        </label>
+        <label>
+          Intervention
+          <textarea value={intervention} onChange={(event) => setIntervention(event.target.value)} rows={4} />
+        </label>
+        <label>
+          Metrics
+          <textarea value={metrics} onChange={(event) => setMetrics(event.target.value)} rows={4} />
+        </label>
+        <label>
+          Deadline
+          <input type="date" value={deadline} onChange={(event) => setDeadline(event.target.value)} required />
+        </label>
+        <IconButton className="primary" type="submit" disabled={!projects.length} icon={<Check size={18} />}>
+          Create
+        </IconButton>
+      </form>
+    </div>
   );
 }
 
 function GanttProtocolRow({
   chartWidth,
   color,
+  columnWidth,
+  dayGridTemplate,
   days,
   protocol,
   today,
 }: {
   chartWidth: number;
   color: string;
+  columnWidth: number;
+  dayGridTemplate: string;
   days: string[];
   protocol: Protocol;
   today: string;
@@ -749,14 +1598,14 @@ function GanttProtocolRow({
   const rawStartIndex = daysBetween(today, start);
   const leftIndex = Math.max(0, rawStartIndex);
   const endIndex = Math.max(leftIndex, daysBetween(today, deadline));
-  const left = leftIndex * GANTT_DAY_WIDTH;
-  const width = Math.max(GANTT_DAY_WIDTH, (endIndex - leftIndex + 1) * GANTT_DAY_WIDTH);
+  const left = leftIndex * columnWidth;
+  const width = Math.max(columnWidth, (endIndex - leftIndex + 1) * columnWidth);
   const clipped = rawStartIndex < 0;
   const canShowLabel = width >= 96;
 
   return (
     <div className="gantt-row" style={{ width: chartWidth }}>
-      <div className="gantt-row-columns" style={{ gridTemplateColumns: `repeat(${days.length}, ${GANTT_DAY_WIDTH}px)` }}>
+      <div className="gantt-row-columns" style={{ gridTemplateColumns: dayGridTemplate }}>
         {days.map((day) => (
           <span className={`gantt-column ${day === today ? "today" : ""}`} key={day} />
         ))}
@@ -794,11 +1643,13 @@ function TodayScreen() {
   const [completedToday, setCompletedToday] = useState<Todo[]>([]);
   const [completingTodoIds, setCompletingTodoIds] = useState<string[]>([]);
   const [completedOpen, setCompletedOpen] = useState(false);
+  const [addEntryOpen, setAddEntryOpen] = useState(false);
   const [addTodoOpen, setAddTodoOpen] = useState(false);
   const [editingTodo, setEditingTodo] = useState<Todo | null>(null);
   const [openSession, setOpenSession] = useState<CheckinSession | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [datesOpen, setDatesOpen] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const todoSensors = useSensors(
@@ -853,6 +1704,8 @@ function TodayScreen() {
         }),
       });
       await load(selectedDate);
+      setOpenSession(null);
+      setAnswers((current) => ({ ...current, [session]: {} }));
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Could not save check-in");
     }
@@ -960,6 +1813,15 @@ function TodayScreen() {
         ))}
       </div>
 
+      <div className="quick-capture-row">
+        <IconButton className="outline-accent" type="button" onClick={() => setAddEntryOpen(true)} icon={<Plus size={18} />}>
+          Add note
+        </IconButton>
+        <IconButton className="outline-accent" type="button" onClick={() => setAddTodoOpen(true)} icon={<Plus size={18} />}>
+          Add to-do
+        </IconButton>
+      </div>
+
       <section className="section-block">
         <div className="section-heading">
           <h2>To-dos</h2>
@@ -981,11 +1843,6 @@ function TodayScreen() {
             </div>
           </SortableContext>
         </DndContext>
-        <div className="add-todo-row">
-          <IconButton type="button" onClick={() => setAddTodoOpen(true)} icon={<Plus size={18} />}>
-            Add to-do
-          </IconButton>
-        </div>
       </section>
 
       <section className="section-block">
@@ -1007,6 +1864,14 @@ function TodayScreen() {
         ) : null}
       </section>
 
+      {addEntryOpen ? (
+        <TodayEntrySheet
+          onClose={() => setAddEntryOpen(false)}
+          onSaved={() => load(selectedDate)}
+          onToast={(message) => setToastMessage(message)}
+          protocols={activeProtocols}
+        />
+      ) : null}
       {datesOpen ? (
         <div className="sheet-backdrop">
           <div className="sheet">
@@ -1042,6 +1907,7 @@ function TodayScreen() {
         <TodoSheet
           onClose={() => setAddTodoOpen(false)}
           onSaved={() => load(selectedDate)}
+          onToast={(message) => setToastMessage(message)}
           protocols={activeProtocols}
         />
       ) : null}
@@ -1052,6 +1918,7 @@ function TodayScreen() {
           todo={editingTodo}
         />
       ) : null}
+      <Toast message={toastMessage} onDone={() => setToastMessage(null)} />
     </section>
   );
 }
@@ -1086,6 +1953,7 @@ function TodayTodoItem({
         <span>{[todo.project_title, todo.protocol_title].filter(Boolean).join(" / ")}</span>
         <div className="todo-meta-row">
           <DeadlineBadge value={todo.due_date} />
+          <TodoRecurrenceBadge todo={todo} />
           <TodoAssigneeBadges todo={todo} />
         </div>
       </div>
@@ -1132,6 +2000,7 @@ function SortableTodayTodoItem({
         <span>{[todo.project_title, todo.protocol_title].filter(Boolean).join(" / ")}</span>
         <div className="todo-meta-row">
           <DeadlineBadge value={todo.due_date} />
+          <TodoRecurrenceBadge todo={todo} />
           <TodoAssigneeBadges todo={todo} />
         </div>
       </div>
@@ -1188,11 +2057,30 @@ function normalizedAssignees(rows: TodoAssigneeDraft[]) {
     }));
 }
 
-function todoSheetSnapshot(protocolId: string, body: string, dueDate: string, assignees: TodoAssigneeDraft[]) {
+function todayWeekday() {
+  return new Date(`${localDateValue()}T00:00:00`).getDay();
+}
+
+function todayMonthDay() {
+  return Number(localDateValue().slice(8, 10));
+}
+
+function todoSheetSnapshot(
+  protocolId: string,
+  body: string,
+  dueDate: string,
+  recurrence: Todo["recurrence"],
+  recurrenceFrequency: NonNullable<Todo["recurrence_frequency"]>,
+  recurrenceDay: number | null,
+  assignees: TodoAssigneeDraft[],
+) {
   return JSON.stringify({
     protocolId,
     body: body.trim(),
     dueDate,
+    recurrence,
+    recurrenceFrequency,
+    recurrenceDay,
     assignees: normalizedAssignees(assignees).map((assignee) => ({
       person_id: assignee.person_id,
       role: assignee.role,
@@ -1204,12 +2092,14 @@ function TodoSheet({
   fixedProtocolId,
   onClose,
   onSaved,
+  onToast,
   protocols = [],
   todo,
 }: {
   fixedProtocolId?: string;
   onClose: () => void;
   onSaved: () => Promise<void>;
+  onToast?: (message: string) => void;
   protocols?: Protocol[];
   todo?: Todo | null;
 }) {
@@ -1217,19 +2107,32 @@ function TodoSheet({
     protocolId: fixedProtocolId || todo?.protocol_id || protocols[0]?.id || "",
     body: todo?.body || "",
     dueDate: todo?.due_date || "",
+    recurrence: todo?.recurrence || "one_off",
+    recurrenceFrequency: todo?.recurrence_frequency || "daily",
+    recurrenceDay: todo?.recurrence_day ?? null,
     assignees: (todo?.assignees || []).map(assigneeDraftFromTodo),
   });
   const [protocolId, setProtocolId] = useState(initial.current.protocolId);
   const [body, setBody] = useState(initial.current.body);
   const [dueDate, setDueDate] = useState(initial.current.dueDate);
+  const [recurrence, setRecurrence] = useState<Todo["recurrence"]>(initial.current.recurrence);
+  const [recurrenceFrequency, setRecurrenceFrequency] = useState<NonNullable<Todo["recurrence_frequency"]>>(initial.current.recurrenceFrequency);
+  const [recurrenceDay, setRecurrenceDay] = useState<number | null>(initial.current.recurrenceDay);
   const [assignees, setAssignees] = useState<TodoAssigneeDraft[]>(initial.current.assignees);
   const [people, setPeople] = useState<DirectoryPerson[]>([]);
   const [peopleLoading, setPeopleLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const bodyRef = useRef<HTMLInputElement | null>(null);
-  const touchStartY = useRef<number | null>(null);
   const initialSnapshot = useRef(
-    todoSheetSnapshot(initial.current.protocolId, initial.current.body, initial.current.dueDate, initial.current.assignees),
+    todoSheetSnapshot(
+      initial.current.protocolId,
+      initial.current.body,
+      initial.current.dueDate,
+      initial.current.recurrence,
+      initial.current.recurrenceFrequency,
+      initial.current.recurrenceDay,
+      initial.current.assignees,
+    ),
   );
   const canChooseProtocol = !fixedProtocolId && !todo;
   const isEditing = Boolean(todo);
@@ -1257,7 +2160,7 @@ function TodoSheet({
   }, []);
 
   function isDirty() {
-    return todoSheetSnapshot(protocolId, body, dueDate, assignees) !== initialSnapshot.current;
+    return todoSheetSnapshot(protocolId, body, dueDate, recurrence, recurrenceFrequency, recurrenceDay, assignees) !== initialSnapshot.current;
   }
 
   function requestClose() {
@@ -1267,6 +2170,24 @@ function TodoSheet({
 
   function updateAssignee(key: string, updater: (row: TodoAssigneeDraft) => TodoAssigneeDraft) {
     setAssignees((current) => current.map((row) => (row.key === key ? updater(row) : row)));
+  }
+
+  function changeRecurrence(nextRecurrence: Todo["recurrence"]) {
+    setRecurrence(nextRecurrence);
+    if (nextRecurrence === "recurring" && recurrenceFrequency !== "daily" && recurrenceDay === null) {
+      setRecurrenceDay(recurrenceFrequency === "weekly" ? todayWeekday() : todayMonthDay());
+    }
+  }
+
+  function changeRecurrenceFrequency(nextFrequency: NonNullable<Todo["recurrence_frequency"]>) {
+    setRecurrenceFrequency(nextFrequency);
+    if (nextFrequency === "daily") {
+      setRecurrenceDay(null);
+    } else if (nextFrequency === "weekly") {
+      setRecurrenceDay((current) => (current !== null && current >= 0 && current <= 6 ? current : todayWeekday()));
+    } else {
+      setRecurrenceDay((current) => (current !== null && current >= 1 && current <= 31 ? current : todayMonthDay()));
+    }
   }
 
   function selectPerson(key: string, person: DirectoryPerson) {
@@ -1339,12 +2260,20 @@ function TodoSheet({
     }
 
     const nextAssignees = normalizedAssignees(assignees);
+    const recurrencePayload =
+      recurrence === "recurring"
+        ? {
+            recurrence,
+            recurrence_frequency: recurrenceFrequency,
+            recurrence_day: recurrenceFrequency === "daily" ? null : recurrenceDay,
+          }
+        : { recurrence, recurrence_frequency: null, recurrence_day: null };
     setError(null);
     try {
       if (todo) {
         await apiJson(`/api/todos/${todo.id}`, {
           method: "PATCH",
-          body: JSON.stringify({ body, due_date: dueDate }),
+          body: JSON.stringify({ body, due_date: dueDate, ...recurrencePayload }),
         });
         await syncAssignees(todo.id, nextAssignees);
       } else {
@@ -1353,11 +2282,16 @@ function TodoSheet({
           body: JSON.stringify({
             body,
             due_date: dueDate,
+            ...recurrencePayload,
             assignees: nextAssignees.map((assignee) => ({ person_id: assignee.person_id, role: assignee.role })),
           }),
         });
       }
       await onSaved();
+      if (!todo && onToast) {
+        const selectedProtocol = protocols.find((protocol) => protocol.id === selectedProtocolId);
+        onToast(`To-do added to ${selectedProtocol?.title || "protocol"}`);
+      }
       onClose();
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "Could not save to-do");
@@ -1365,22 +2299,7 @@ function TodoSheet({
   }
 
   return (
-    <div className="sheet-backdrop" onClick={requestClose}>
-      <form
-        className="sheet form todo-sheet"
-        onClick={(event) => event.stopPropagation()}
-        onSubmit={submit}
-        onTouchEnd={(event) => {
-          const startY = touchStartY.current;
-          const endY = event.changedTouches[0]?.clientY ?? startY;
-          touchStartY.current = null;
-          if (startY !== null && endY !== null && endY - startY > 80) requestClose();
-        }}
-        onTouchStart={(event) => {
-          touchStartY.current = event.touches[0]?.clientY ?? null;
-        }}
-      >
-        <div className="sheet-grabber" aria-hidden="true" />
+    <BottomSheet className="form todo-sheet" onClose={requestClose} onSubmit={submit}>
         <div className="section-heading">
           <h2>{isEditing ? "Edit to-do" : "Add to-do"}</h2>
           <div className="small-actions">
@@ -1417,6 +2336,64 @@ function TodoSheet({
           Due date
           <input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} />
         </label>
+        <div className="field-group">
+          <span className="field-label">Type</span>
+          <div className="segmented-control" role="group" aria-label="To-do type">
+            {TODO_RECURRENCE_OPTIONS.map((option) => (
+              <button
+                aria-pressed={recurrence === option.value}
+                className={recurrence === option.value ? "active" : ""}
+                key={option.value}
+                onClick={() => changeRecurrence(option.value)}
+                type="button"
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        {recurrence === "recurring" ? (
+          <div className="field-group">
+            <span className="field-label">Repeats</span>
+            <div className="segmented-control three-up" role="group" aria-label="Recurring frequency">
+              {TODO_RECURRENCE_FREQUENCIES.map((option) => (
+                <button
+                  aria-pressed={recurrenceFrequency === option.value}
+                  className={recurrenceFrequency === option.value ? "active" : ""}
+                  key={option.value}
+                  onClick={() => changeRecurrenceFrequency(option.value)}
+                  type="button"
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {recurrence === "recurring" && recurrenceFrequency === "weekly" ? (
+          <label>
+            Day
+            <select value={recurrenceDay ?? todayWeekday()} onChange={(event) => setRecurrenceDay(Number(event.target.value))}>
+              {WEEKDAY_OPTIONS.map((day) => (
+                <option value={day.value} key={day.value}>
+                  {day.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+        {recurrence === "recurring" && recurrenceFrequency === "monthly" ? (
+          <label>
+            Day
+            <select value={recurrenceDay ?? todayMonthDay()} onChange={(event) => setRecurrenceDay(Number(event.target.value))}>
+              {MONTH_DAY_OPTIONS.map((day) => (
+                <option value={day} key={day}>
+                  {day}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         <div className="field-group">
           <span className="field-label">Assignees</span>
           <div className="assignee-editor-list">
@@ -1506,8 +2483,415 @@ function TodoSheet({
             <span>Add person</span>
           </button>
         </div>
-      </form>
-    </div>
+      </BottomSheet>
+  );
+}
+
+function entryTagChips(value: string) {
+  return value
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean)
+    .filter((tag, index, tags) => tags.indexOf(tag) === index);
+}
+
+function TodayEntrySheet({
+  onClose,
+  onSaved,
+  onToast,
+  protocols,
+}: {
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+  onToast?: (message: string) => void;
+  protocols: Protocol[];
+}) {
+  const [selectedProtocolId, setSelectedProtocolId] = useState("");
+  const [protocolSearch, setProtocolSearch] = useState("");
+  const [body, setBody] = useState("");
+  const [tags, setTags] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+  const [transcribing, setTranscribing] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [telegramOpen, setTelegramOpen] = useState(false);
+  const [telegramPost, setTelegramPost] = useState("");
+  const [telegramBusy, setTelegramBusy] = useState(false);
+  const [telegramSent, setTelegramSent] = useState(false);
+  const [telegramError, setTelegramError] = useState<string | null>(null);
+  const bodyRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
+  const timerRef = useRef<number | null>(null);
+
+  const selectedProtocol = protocols.find((protocol) => protocol.id === selectedProtocolId) || null;
+  const tagsPreview = entryTagChips(tags);
+  const normalizedSearch = protocolSearch.trim().toLowerCase();
+  const protocolGroups = useMemo(() => {
+    const groups = new Map<string, Protocol[]>();
+    for (const protocol of protocols) {
+      const projectTitle = protocol.project_title || "No project";
+      const haystack = `${projectTitle} ${protocol.title}`.toLowerCase();
+      if (normalizedSearch && !haystack.includes(normalizedSearch)) continue;
+      groups.set(projectTitle, [...(groups.get(projectTitle) || []), protocol]);
+    }
+    return Array.from(groups.entries());
+  }, [normalizedSearch, protocols]);
+
+  useEffect(() => {
+    if (!selectedProtocolId) return;
+    window.setTimeout(() => bodyRef.current?.focus(), 0);
+  }, [selectedProtocolId]);
+
+  function isDirty() {
+    return Boolean(selectedProtocolId || body.trim() || tags.trim());
+  }
+
+  function requestClose() {
+    if (isDirty() && !window.confirm("Discard unsaved changes?")) return;
+    onClose();
+  }
+
+  async function transcribeImage(file: File) {
+    setTranscribing(true);
+    setTranscriptionError(null);
+    try {
+      const form = new FormData();
+      form.append("image", file);
+      const { text } = await apiJson<{ text: string }>("/api/transcribe", { method: "POST", body: form });
+      if (text) appendTranscript(text);
+    } catch {
+      setTranscriptionError("Transcription failed — try again");
+    } finally {
+      setTranscribing(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
+  function appendTranscript(text: string) {
+    setBody((current) => {
+      const nextText = text.trim();
+      return current.trim() ? `${current.replace(/\s+$/, "")}\n${nextText}` : nextText;
+    });
+  }
+
+  function releaseRecorder() {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    recorderRef.current = null;
+    if (timerRef.current !== null) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }
+
+  async function transcribeAudio(blob: Blob) {
+    setTranscribing(true);
+    setTranscriptionError(null);
+    try {
+      const wav = await recordingToWav(blob);
+      const form = new FormData();
+      form.append("audio", wav, "memo.wav");
+      const { text } = await apiJson<{ text: string }>("/api/transcribe-audio", { method: "POST", body: form });
+      if (text && text.trim()) appendTranscript(text);
+      else setTranscriptionError("No speech detected — try again");
+    } catch {
+      setTranscriptionError("Transcription failed — try again");
+    } finally {
+      setTranscribing(false);
+    }
+  }
+
+  function stopRecording() {
+    if (recorderRef.current && recorderRef.current.state !== "inactive") recorderRef.current.stop();
+  }
+
+  async function startRecording() {
+    setTranscriptionError(null);
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setTranscriptionError("Recording isn't supported in this browser");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      chunksRef.current = [];
+      const recorder = new MediaRecorder(stream);
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        releaseRecorder();
+        setRecording(false);
+        setElapsed(0);
+        if (blob.size > 0) void transcribeAudio(blob);
+      };
+      recorder.start();
+      recorderRef.current = recorder;
+      setRecording(true);
+      setElapsed(0);
+      timerRef.current = window.setInterval(() => {
+        setElapsed((seconds) => {
+          const next = seconds + 1;
+          if (next >= MAX_RECORDING_SECONDS) stopRecording();
+          return next;
+        });
+      }, 1000);
+    } catch {
+      setTranscriptionError("Microphone access denied");
+      releaseRecorder();
+    }
+  }
+
+  useEffect(
+    () => () => {
+      if (recorderRef.current && recorderRef.current.state !== "inactive") recorderRef.current.stop();
+      releaseRecorder();
+    },
+    [],
+  );
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!selectedProtocol) {
+      setError("Choose a protocol");
+      return;
+    }
+    if (!body.trim()) {
+      setError("Entry body is required");
+      return;
+    }
+
+    setError(null);
+    try {
+      await apiJson<{ entry: Entry }>(`/api/protocols/${selectedProtocol.id}/entries`, {
+        method: "POST",
+        body: JSON.stringify({
+          body,
+          tags: tagsPreview,
+          created_at: new Date().toISOString(),
+        }),
+      });
+      await onSaved();
+      onToast?.(`Entry added to ${selectedProtocol.title}`);
+      onClose();
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Could not save entry");
+    }
+  }
+
+  async function reformatForTelegram() {
+    if (!body.trim()) {
+      setTelegramError("Write a note first");
+      return;
+    }
+    setTelegramBusy(true);
+    setTelegramError(null);
+    setTelegramSent(false);
+    try {
+      const { post } = await apiJson<{ post: string }>("/api/telegram/reformat", {
+        method: "POST",
+        body: JSON.stringify({ text: body }),
+      });
+      setTelegramPost(post);
+    } catch (reformatError) {
+      setTelegramError(reformatError instanceof Error ? reformatError.message : "Could not reformat note");
+    } finally {
+      setTelegramBusy(false);
+    }
+  }
+
+  async function postToTelegram() {
+    if (!telegramPost.trim()) {
+      setTelegramError("Reformat or write a post first");
+      return;
+    }
+    setTelegramBusy(true);
+    setTelegramError(null);
+    try {
+      await apiJson<{ ok: boolean }>("/api/telegram/post", {
+        method: "POST",
+        body: JSON.stringify({ text: telegramPost }),
+      });
+      setTelegramSent(true);
+      onToast?.("Posted to Telegram");
+    } catch (postError) {
+      setTelegramError(postError instanceof Error ? postError.message : "Could not post to Telegram");
+    } finally {
+      setTelegramBusy(false);
+    }
+  }
+
+  return (
+    <BottomSheet className="form todo-sheet entry-sheet" onClose={requestClose} onSubmit={submit}>
+      <div className="section-heading">
+        <h2>Add note</h2>
+      </div>
+      <ErrorBanner message={error} />
+      <div className="field-group">
+        <span className="field-label">Protocol</span>
+        {selectedProtocol ? (
+          <div className="selected-protocol-chip">
+            <span>{selectedProtocol.project_title ? `${selectedProtocol.project_title} / ` : ""}{selectedProtocol.title}</span>
+            <button type="button" onClick={() => setSelectedProtocolId("")} aria-label="Clear protocol" title="Clear protocol">
+              <X size={16} />
+            </button>
+          </div>
+        ) : (
+          <div className="protocol-picker">
+            <input
+              autoComplete="off"
+              placeholder="Search protocols"
+              value={protocolSearch}
+              onChange={(event) => setProtocolSearch(event.target.value)}
+            />
+            <div className="protocol-picker-menu">
+              {!protocols.length ? <span className="person-picker-status">No active protocols</span> : null}
+              {protocolGroups.map(([projectTitle, projectProtocols]) => (
+                <div className="protocol-picker-group" key={projectTitle}>
+                  <span>{projectTitle}</span>
+                  {projectProtocols.map((protocol) => (
+                    <button
+                      type="button"
+                      key={protocol.id}
+                      onClick={() => {
+                        setSelectedProtocolId(protocol.id);
+                        setProtocolSearch("");
+                      }}
+                    >
+                      {protocol.title}
+                    </button>
+                  ))}
+                </div>
+              ))}
+              {protocols.length && !protocolGroups.length ? <span className="person-picker-status">No matching protocols</span> : null}
+            </div>
+          </div>
+        )}
+      </div>
+      <label>
+        Body
+        <div className="entry-body-field">
+          <textarea
+            ref={bodyRef}
+            value={body}
+            onChange={(event) => setBody(event.target.value)}
+            placeholder="What are you observing?"
+            rows={9}
+            required
+          />
+          {transcribing ? <span className="transcription-state">Transcribing...</span> : null}
+        </div>
+      </label>
+      <div className="transcription-actions">
+        <button
+          className="button"
+          type="button"
+          onClick={() => fileRef.current?.click()}
+          disabled={transcribing || recording}
+        >
+          <Camera size={18} />
+          <span>{transcribing ? "Transcribing..." : "Transcribe handwriting"}</span>
+        </button>
+        <button
+          className={`button${recording ? " danger" : ""}`}
+          type="button"
+          onClick={recording ? stopRecording : startRecording}
+          disabled={transcribing}
+        >
+          {recording ? <Square size={18} /> : <Mic size={18} />}
+          <span>
+            {recording
+              ? `Stop · ${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`
+              : transcribing
+                ? "Transcribing..."
+                : "Record voice"}
+          </span>
+        </button>
+        <input
+          ref={fileRef}
+          className="hidden-file-input"
+          type="file"
+          accept="image/png,image/jpeg"
+          capture="environment"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) void transcribeImage(file);
+          }}
+        />
+        {transcriptionError ? <span className="inline-error">{transcriptionError}</span> : null}
+      </div>
+      <label>
+        Tags
+        <input className="mono-input" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="research, signal, follow-up" />
+      </label>
+      {tagsPreview.length ? (
+        <div className="tag-row">
+          {tagsPreview.map((tag) => (
+            <span className="tag" key={tag}>
+              {tag}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div className="telegram-share">
+        <button
+          type="button"
+          className="telegram-toggle"
+          onClick={() => setTelegramOpen((open) => !open)}
+          aria-expanded={telegramOpen}
+        >
+          <Send size={16} />
+          <span>Share to Telegram</span>
+          <ChevronDown size={16} className={telegramOpen ? "chevron open" : "chevron"} />
+        </button>
+        {telegramOpen ? (
+          <div className="telegram-panel">
+            <button
+              className="button"
+              type="button"
+              onClick={() => void reformatForTelegram()}
+              disabled={telegramBusy || !body.trim()}
+            >
+              <Sparkles size={18} />
+              <span>{telegramBusy && !telegramSent ? "Reformatting..." : "Reformat as post"}</span>
+            </button>
+            <textarea
+              value={telegramPost}
+              onChange={(event) => {
+                setTelegramPost(event.target.value);
+                setTelegramSent(false);
+              }}
+              placeholder="Your note, rewritten as a post — edit before sending"
+              rows={4}
+            />
+            {telegramError ? <span className="inline-error">{telegramError}</span> : null}
+            <button
+              className="button primary"
+              type="button"
+              onClick={() => void postToTelegram()}
+              disabled={telegramBusy || !telegramPost.trim()}
+            >
+              <Send size={18} />
+              <span>{telegramSent ? "Posted ✓" : telegramBusy ? "Posting..." : "Post to Telegram"}</span>
+            </button>
+          </div>
+        ) : null}
+      </div>
+      <div className="sheet-footer">
+        <button type="button" className="button" onClick={requestClose}>
+          <span>Close</span>
+        </button>
+        <button className="button primary" type="submit">
+          <Check size={18} />
+          <span>Save</span>
+        </button>
+      </div>
+    </BottomSheet>
   );
 }
 
@@ -1928,9 +3312,11 @@ function ProjectScreen({ readOnly = false }: { readOnly?: boolean }) {
   const navigate = useNavigate();
   const [project, setProject] = useState<Project | null>(null);
   const [protocols, setProtocols] = useState<Protocol[]>([]);
+  const [cycles, setCycles] = useState<ProtocolCycle[]>([]);
   const [people, setPeople] = useState<Person[]>([]);
   const [personName, setPersonName] = useState("");
   const [personNote, setPersonNote] = useState("");
+  const [isAddingPerson, setIsAddingPerson] = useState(false);
   const [editingPerson, setEditingPerson] = useState<Person | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1939,13 +3325,15 @@ function ProjectScreen({ readOnly = false }: { readOnly?: boolean }) {
     setLoading(true);
     setError(null);
     try {
-      const [{ project: nextProject }, { protocols: nextProtocols }, { people: nextPeople }] = await Promise.all([
+      const [{ project: nextProject }, { protocols: nextProtocols }, { people: nextPeople }, { cycles: nextCycles }] = await Promise.all([
         apiJson<{ project: Project }>(`/api/projects/${id}`),
         apiJson<{ protocols: Protocol[] }>(`/api/projects/${id}/protocols`),
         apiJson<{ people: Person[] }>(`/api/projects/${id}/people`),
+        apiJson<{ cycles: ProtocolCycle[] }>(`/api/projects/${id}/cycles`),
       ]);
       setProject(nextProject);
       setProtocols(nextProtocols);
+      setCycles(nextCycles);
       setPeople(nextPeople);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Could not load project");
@@ -1988,6 +3376,7 @@ function ProjectScreen({ readOnly = false }: { readOnly?: boolean }) {
     await apiJson(path, { method, body: JSON.stringify(payload) });
     setPersonName("");
     setPersonNote("");
+    if (!editingPerson) setIsAddingPerson(false);
     setEditingPerson(null);
     await load();
   }
@@ -2052,7 +3441,72 @@ function ProjectScreen({ readOnly = false }: { readOnly?: boolean }) {
 
       <section className="section-block">
         <div className="section-heading">
+          <h2>Cycle Archive</h2>
+          <span className="meta">{cycles.length}</span>
+        </div>
+        {!cycles.length ? <Empty>No completed cycles yet.</Empty> : null}
+        <div className="stack">
+          {cycles.map((cycle) => (
+            <article className="card cycle-card" key={cycle.id}>
+              <div className="cycle-card-head">
+                <div>
+                  <h3>{cycle.protocol_title}</h3>
+                  <p className="meta">{formatDateTime(cycle.completed_at)}</p>
+                </div>
+                {cycle.protocol_id ? (
+                  <NavLink className="icon-only" to={`/protocols/${cycle.protocol_id}`} aria-label="Open protocol" title="Open protocol">
+                    <Folder size={18} />
+                  </NavLink>
+                ) : null}
+              </div>
+              {cycle.synthesis ? (
+                <div className="markdown-body cycle-markdown">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{cycle.synthesis}</ReactMarkdown>
+                </div>
+              ) : null}
+              {cycle.results ? (
+                <div className="cycle-field">
+                  <span>Results</span>
+                  <p>{cycle.results}</p>
+                </div>
+              ) : null}
+              {cycle.notes ? (
+                <div className="cycle-field">
+                  <span>Notes</span>
+                  <p>{cycle.notes}</p>
+                </div>
+              ) : null}
+              {cycle.photos.length ? (
+                <div className="photo-strip">
+                  {cycle.photos.map((photo) => (
+                    <img key={photo.id} src={photo.r2_url} alt={photo.caption || "Cycle photo"} />
+                  ))}
+                </div>
+              ) : null}
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="section-block">
+        <div className="section-heading">
           <h2>People</h2>
+          {!readOnly ? (
+            <button
+              type="button"
+              className="icon-only"
+              onClick={() => {
+                setIsAddingPerson((current) => !current);
+                setPersonName("");
+                setPersonNote("");
+                setEditingPerson(null);
+              }}
+              aria-label={isAddingPerson ? "Cancel adding person" : "Add person"}
+              title={isAddingPerson ? "Cancel adding person" : "Add person"}
+            >
+              {isAddingPerson ? <X size={20} /> : <Plus size={20} />}
+            </button>
+          ) : null}
         </div>
         {!people.length ? <Empty>No people.</Empty> : null}
         <div className="stack compact-stack">
@@ -2071,7 +3525,15 @@ function ProjectScreen({ readOnly = false }: { readOnly?: boolean }) {
                   />
                 </div>
               ) : (
-                <button type="button" className="unstyled person-main" onClick={() => !readOnly && setEditingPerson(person)}>
+                <button
+                  type="button"
+                  className="unstyled person-main"
+                  onClick={() => {
+                    if (readOnly) return;
+                    setIsAddingPerson(false);
+                    setEditingPerson(person);
+                  }}
+                >
                   <strong>{person.name}</strong>
                   {person.note ? <span>{person.note}</span> : null}
                 </button>
@@ -2091,7 +3553,7 @@ function ProjectScreen({ readOnly = false }: { readOnly?: boolean }) {
             </article>
           ))}
         </div>
-        {!readOnly ? (
+        {!readOnly && isAddingPerson ? (
           <form className="form inline-form" onSubmit={savePerson}>
             <label>
               Name
@@ -2179,6 +3641,14 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
   const [entryOpen, setEntryOpen] = useState(openEntryOnMount);
   const [todoOpen, setTodoOpen] = useState(false);
   const [editingTodo, setEditingTodo] = useState<Todo | null>(null);
+  const [cycleOpen, setCycleOpen] = useState(false);
+  const [protocolEditing, setProtocolEditing] = useState(false);
+  const [protocolTitle, setProtocolTitle] = useState("");
+  const [protocolGoal, setProtocolGoal] = useState("");
+  const [protocolIntervention, setProtocolIntervention] = useState("");
+  const [protocolMetrics, setProtocolMetrics] = useState("");
+  const [protocolDeadline, setProtocolDeadline] = useState("");
+  const [protocolStatus, setProtocolStatus] = useState<Protocol["status"]>("active");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -2192,6 +3662,12 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
         apiJson<{ todos: Todo[] }>(`/api/protocols/${id}/todos`),
       ]);
       setProtocol(nextProtocol);
+      setProtocolTitle(nextProtocol.title);
+      setProtocolGoal(nextProtocol.goal || "");
+      setProtocolIntervention(nextProtocol.intervention || "");
+      setProtocolMetrics(nextProtocol.metrics || "");
+      setProtocolDeadline(nextProtocol.deadline || "");
+      setProtocolStatus(nextProtocol.status);
       setEntries(nextEntries);
       setTodos(nextTodos);
     } catch (loadError) {
@@ -2213,6 +3689,46 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
     await load();
   }
 
+  function cancelProtocolEdit() {
+    if (!protocol) return;
+    setProtocolTitle(protocol.title);
+    setProtocolGoal(protocol.goal || "");
+    setProtocolIntervention(protocol.intervention || "");
+    setProtocolMetrics(protocol.metrics || "");
+    setProtocolDeadline(protocol.deadline || "");
+    setProtocolStatus(protocol.status);
+    setProtocolEditing(false);
+  }
+
+  async function saveProtocolDetails(event: React.FormEvent) {
+    event.preventDefault();
+    if (!protocol) return;
+    setError(null);
+    try {
+      const { protocol: nextProtocol } = await apiJson<{ protocol: Protocol }>(`/api/protocols/${protocol.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          title: protocolTitle,
+          goal: protocolGoal,
+          intervention: protocolIntervention,
+          metrics: protocolMetrics,
+          deadline: protocolDeadline,
+          status: protocolStatus,
+        }),
+      });
+      setProtocol(nextProtocol);
+      setProtocolTitle(nextProtocol.title);
+      setProtocolGoal(nextProtocol.goal || "");
+      setProtocolIntervention(nextProtocol.intervention || "");
+      setProtocolMetrics(nextProtocol.metrics || "");
+      setProtocolDeadline(nextProtocol.deadline || "");
+      setProtocolStatus(nextProtocol.status);
+      setProtocolEditing(false);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Could not save protocol details");
+    }
+  }
+
   if (loading) return <Loading />;
   if (!protocol) return <ErrorBanner message={error || "Protocol not found"} />;
 
@@ -2229,17 +3745,67 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
         </div>
       </header>
       <ErrorBanner message={error} />
-      <div className="detail-grid">
-        {protocol.goal ? <Detail label="Goal" value={protocol.goal} /> : null}
-        {protocol.intervention ? <Detail label="Intervention" value={protocol.intervention} /> : null}
-        {protocol.metrics ? <Detail label="Metrics" value={protocol.metrics} /> : null}
-        {protocol.deadline ? <Detail label="Deadline" value={formatDueDate(protocol.deadline)} /> : null}
-      </div>
+      {protocolEditing ? (
+        <form className="form protocol-details-form" onSubmit={saveProtocolDetails}>
+          <label>
+            Title
+            <input value={protocolTitle} onChange={(event) => setProtocolTitle(event.target.value)} required />
+          </label>
+          <label>
+            Goal
+            <textarea value={protocolGoal} onChange={(event) => setProtocolGoal(event.target.value)} rows={3} />
+          </label>
+          <label>
+            Intervention
+            <textarea value={protocolIntervention} onChange={(event) => setProtocolIntervention(event.target.value)} rows={4} />
+          </label>
+          <label>
+            Metrics
+            <textarea value={protocolMetrics} onChange={(event) => setProtocolMetrics(event.target.value)} rows={4} />
+          </label>
+          <label>
+            Deadline
+            <input type="date" value={protocolDeadline} onChange={(event) => setProtocolDeadline(event.target.value)} required />
+          </label>
+          <label>
+            Status
+            <select value={protocolStatus} onChange={(event) => setProtocolStatus(event.target.value as Protocol["status"])}>
+              <option value="active">Active</option>
+              <option value="completed">Completed</option>
+            </select>
+          </label>
+          <div className="action-row">
+            <IconButton className="primary" type="submit" icon={<Check size={18} />}>
+              Save
+            </IconButton>
+            <IconButton type="button" onClick={cancelProtocolEdit} icon={<X size={18} />}>
+              Cancel
+            </IconButton>
+          </div>
+        </form>
+      ) : (
+        <>
+          <div className="action-row">
+            <IconButton className="primary" type="button" onClick={() => setCycleOpen(true)} icon={<Archive size={18} />}>
+              Complete Cycle
+            </IconButton>
+            <IconButton type="button" onClick={() => setProtocolEditing(true)} icon={<Pencil size={18} />}>
+              Edit Details
+            </IconButton>
+          </div>
+          <div className="detail-grid">
+            {protocol.goal ? <Detail label="Goal" value={protocol.goal} /> : null}
+            {protocol.intervention ? <Detail label="Intervention" value={protocol.intervention} /> : null}
+            {protocol.metrics ? <Detail label="Metrics" value={protocol.metrics} /> : null}
+            {protocol.deadline ? <Detail label="Deadline" value={formatDueDate(protocol.deadline)} /> : null}
+          </div>
+        </>
+      )}
 
       <section className="section-block">
         <div className="section-heading">
           <h2>Entries</h2>
-          <button type="button" className="icon-only" onClick={() => setEntryOpen(true)} aria-label="Add entry" title="Add entry">
+          <button type="button" className="icon-only" onClick={() => setEntryOpen(true)} aria-label="Add note" title="Add note">
             <Plus size={20} />
           </button>
         </div>
@@ -2290,6 +3856,7 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
               <span>
                 <strong>{todo.body}</strong>
                 <DeadlineBadge value={todo.due_date} />
+                <TodoRecurrenceBadge todo={todo} />
                 <TodoAssigneeBadges todo={todo} />
               </span>
             </article>
@@ -2298,6 +3865,9 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
       </section>
 
       {entryOpen ? <EntrySheet protocolId={id} onClose={() => setEntryOpen(false)} onSaved={load} /> : null}
+      {cycleOpen ? (
+        <CycleCompletionSheet protocol={protocol} onClose={() => setCycleOpen(false)} onSaved={load} />
+      ) : null}
       {todoOpen ? (
         <TodoSheet fixedProtocolId={id} onClose={() => setTodoOpen(false)} onSaved={load} />
       ) : null}
@@ -2310,6 +3880,295 @@ function ProtocolScreen({ openEntryOnMount = false }: { openEntryOnMount?: boole
         />
       ) : null}
     </section>
+  );
+}
+
+function CycleCompletionSheet({
+  onClose,
+  onSaved,
+  protocol,
+}: {
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+  protocol: Protocol;
+}) {
+  const [synthesis, setSynthesis] = useState("");
+  const [notes, setNotes] = useState("");
+  const [results, setResults] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+  const [drafting, setDrafting] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [progress, setProgress] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+  const [transcribing, setTranscribing] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const cameraInputRef = useRef<HTMLInputElement | null>(null);
+  const photoInputRef = useRef<HTMLInputElement | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setDrafting(true);
+    setError(null);
+    apiJson<{ synthesis: string }>(`/api/protocols/${protocol.id}/cycle-draft`, { method: "POST" })
+      .then(({ synthesis: nextSynthesis }) => {
+        if (active) setSynthesis(nextSynthesis);
+      })
+      .catch((draftError) => {
+        if (active) setError(draftError instanceof Error ? draftError.message : "Could not generate synthesis");
+      })
+      .finally(() => {
+        if (active) setDrafting(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [protocol.id]);
+
+  function isDirty() {
+    return Boolean(synthesis.trim() || notes.trim() || results.trim() || files.length);
+  }
+
+  function requestClose() {
+    if (isDirty() && !window.confirm("Discard this cycle draft?")) return;
+    onClose();
+  }
+
+  function addFiles(fileList: FileList | null) {
+    const nextFiles = Array.from(fileList || []);
+    if (!nextFiles.length) return;
+    setFiles((current) => [...current, ...nextFiles]);
+  }
+
+  function appendTranscript(text: string) {
+    setNotes((current) => {
+      const nextText = text.trim();
+      return current.trim() ? `${current.replace(/\s+$/, "")}\n${nextText}` : nextText;
+    });
+  }
+
+  function releaseRecorder() {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    recorderRef.current = null;
+    if (timerRef.current !== null) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }
+
+  async function transcribeAudio(blob: Blob) {
+    setTranscribing(true);
+    setTranscriptionError(null);
+    try {
+      const wav = await recordingToWav(blob);
+      const form = new FormData();
+      form.append("audio", wav, "cycle-note.wav");
+      const { text } = await apiJson<{ text: string }>("/api/transcribe-audio", { method: "POST", body: form });
+      if (text && text.trim()) appendTranscript(text);
+      else setTranscriptionError("No speech detected — try again");
+    } catch {
+      setTranscriptionError("Transcription failed — try again");
+    } finally {
+      setTranscribing(false);
+    }
+  }
+
+  function stopRecording() {
+    if (recorderRef.current && recorderRef.current.state !== "inactive") recorderRef.current.stop();
+  }
+
+  async function startRecording() {
+    setTranscriptionError(null);
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setTranscriptionError("Recording isn't supported in this browser");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      chunksRef.current = [];
+      const recorder = new MediaRecorder(stream);
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        releaseRecorder();
+        setRecording(false);
+        setElapsed(0);
+        if (blob.size > 0) void transcribeAudio(blob);
+      };
+      recorder.start();
+      recorderRef.current = recorder;
+      setRecording(true);
+      setElapsed(0);
+      timerRef.current = window.setInterval(() => {
+        setElapsed((seconds) => {
+          const next = seconds + 1;
+          if (next >= MAX_RECORDING_SECONDS) stopRecording();
+          return next;
+        });
+      }, 1000);
+    } catch {
+      setTranscriptionError("Microphone access denied");
+      releaseRecorder();
+    }
+  }
+
+  useEffect(
+    () => () => {
+      if (recorderRef.current && recorderRef.current.state !== "inactive") recorderRef.current.stop();
+      releaseRecorder();
+    },
+    [],
+  );
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      const { cycle } = await apiJson<{ cycle: ProtocolCycle }>(`/api/protocols/${protocol.id}/cycles`, {
+        method: "POST",
+        body: JSON.stringify({
+          synthesis,
+          notes,
+          results,
+          completed_at: new Date().toISOString(),
+        }),
+      });
+      for (const [index, file] of files.entries()) {
+        await uploadCyclePhoto(cycle.id, file, (fileProgress) => {
+          setProgress(Math.round(((index + fileProgress / 100) / files.length) * 100));
+        });
+      }
+      setProgress(null);
+      await onSaved();
+      onClose();
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Could not complete cycle");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <BottomSheet className="form todo-sheet cycle-sheet" onClose={requestClose} onSubmit={submit}>
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Protocol cycle</p>
+          <h2>Complete Cycle</h2>
+        </div>
+        <div className="small-actions">
+          <button className="icon-only primary-icon" type="submit" disabled={saving || drafting} aria-label="Save cycle" title="Save cycle">
+            <Check size={20} />
+          </button>
+          <button type="button" className="icon-only" onClick={requestClose} aria-label="Close" title="Close">
+            <X size={20} />
+          </button>
+        </div>
+      </div>
+      <ErrorBanner message={error} />
+      <label>
+        Synthesis
+        <div className="entry-body-field">
+          <textarea
+            value={synthesis}
+            onChange={(event) => setSynthesis(event.target.value)}
+            placeholder={drafting ? "Generating synthesis..." : "Cycle synthesis"}
+            rows={12}
+          />
+          {drafting ? <span className="transcription-state">Generating...</span> : null}
+        </div>
+      </label>
+      <label>
+        Results
+        <textarea
+          value={results}
+          onChange={(event) => setResults(event.target.value)}
+          placeholder="What changed, what moved, what measured result matters?"
+          rows={5}
+        />
+      </label>
+      <label>
+        Notes / voice transcript
+        <textarea
+          value={notes}
+          onChange={(event) => setNotes(event.target.value)}
+          placeholder="Add your own reflections, corrections, or a transcribed voice memo."
+          rows={6}
+        />
+      </label>
+      <div className="transcription-actions">
+        <button
+          className={`button${recording ? " danger" : ""}`}
+          type="button"
+          onClick={recording ? stopRecording : startRecording}
+          disabled={transcribing || saving}
+        >
+          {recording ? <Square size={18} /> : <Mic size={18} />}
+          <span>
+            {recording
+              ? `Stop · ${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`
+              : transcribing
+                ? "Transcribing..."
+                : "Record voice note"}
+          </span>
+        </button>
+        {transcriptionError ? <span className="inline-error">{transcriptionError}</span> : null}
+      </div>
+      <div className="field-group">
+        <span className="field-label">Photos</span>
+        <div className="entry-photo-actions">
+          <button className="button" type="button" onClick={() => cameraInputRef.current?.click()} disabled={saving}>
+            <Camera size={18} />
+            <span>Take photo</span>
+          </button>
+          <button className="button" type="button" onClick={() => photoInputRef.current?.click()} disabled={saving}>
+            <Plus size={18} />
+            <span>Add photos</span>
+          </button>
+        </div>
+        <input
+          ref={cameraInputRef}
+          className="hidden-file-input"
+          type="file"
+          accept="image/*"
+          capture="environment"
+          onChange={(event) => {
+            addFiles(event.target.files);
+            event.target.value = "";
+          }}
+        />
+        <input
+          ref={photoInputRef}
+          className="hidden-file-input"
+          type="file"
+          accept="image/*"
+          multiple
+          onChange={(event) => {
+            addFiles(event.target.files);
+            event.target.value = "";
+          }}
+        />
+      </div>
+      {files.length ? (
+        <div className="file-list">
+          <Camera size={18} />
+          <span>{files.length} selected</span>
+          <button className="file-clear-button" type="button" onClick={() => setFiles([])} aria-label="Clear selected photos" title="Clear selected photos">
+            <X size={16} />
+          </button>
+          {progress !== null ? <progress value={progress} max={100} /> : null}
+        </div>
+      ) : null}
+    </BottomSheet>
   );
 }
 
@@ -2341,6 +4200,25 @@ function uploadPhoto(entryId: string, file: File, onProgress: (progress: number)
   });
 }
 
+function uploadCyclePhoto(cycleId: string, file: File, onProgress: (progress: number) => void) {
+  return new Promise<void>((resolve, reject) => {
+    const form = new FormData();
+    form.append("photo", file);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api/protocol-cycles/${cycleId}/photos`);
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(xhr.responseText || "Photo upload failed"));
+    };
+    xhr.onerror = () => reject(new Error("Photo upload failed"));
+    xhr.send(form);
+  });
+}
+
 function EntrySheet({ protocolId, onClose, onSaved }: { protocolId: string; onClose: () => void; onSaved: () => Promise<void> }) {
   const [createdAt, setCreatedAt] = useState(localDateTimeValue());
   const [body, setBody] = useState("");
@@ -2348,6 +4226,14 @@ function EntrySheet({ protocolId, onClose, onSaved }: { protocolId: string; onCl
   const [files, setFiles] = useState<File[]>([]);
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const cameraInputRef = useRef<HTMLInputElement | null>(null);
+  const photoInputRef = useRef<HTMLInputElement | null>(null);
+
+  function addFiles(fileList: FileList | null) {
+    const nextFiles = Array.from(fileList || []);
+    if (!nextFiles.length) return;
+    setFiles((current) => [...current, ...nextFiles]);
+  }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -2396,19 +4282,48 @@ function EntrySheet({ protocolId, onClose, onSaved }: { protocolId: string; onCl
           Tags
           <input className="mono-input" value={tags} onChange={(event) => setTags(event.target.value)} />
         </label>
-        <label>
-          Photos
+        <div className="field-group">
+          <span className="field-label">Photos</span>
+          <div className="entry-photo-actions">
+            <button className="button" type="button" onClick={() => cameraInputRef.current?.click()}>
+              <Camera size={18} />
+              <span>Take photo</span>
+            </button>
+            <button className="button" type="button" onClick={() => photoInputRef.current?.click()}>
+              <Plus size={18} />
+              <span>Add photos</span>
+            </button>
+          </div>
           <input
+            ref={cameraInputRef}
+            className="hidden-file-input"
+            type="file"
+            accept="image/*"
+            capture="environment"
+            onChange={(event) => {
+              addFiles(event.target.files);
+              event.target.value = "";
+            }}
+          />
+          <input
+            ref={photoInputRef}
+            className="hidden-file-input"
             type="file"
             accept="image/*"
             multiple
-            onChange={(event) => setFiles(Array.from(event.target.files || []))}
+            onChange={(event) => {
+              addFiles(event.target.files);
+              event.target.value = "";
+            }}
           />
-        </label>
+        </div>
         {files.length ? (
           <div className="file-list">
             <Camera size={18} />
             <span>{files.length} selected</span>
+            <button className="file-clear-button" type="button" onClick={() => setFiles([])} aria-label="Clear selected photos" title="Clear selected photos">
+              <X size={16} />
+            </button>
             {progress !== null ? <progress value={progress} max={100} /> : null}
           </div>
         ) : null}
@@ -2569,6 +4484,8 @@ function ProjectsScreen() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [protocolsByProject, setProtocolsByProject] = useState<Record<string, Protocol[]>>({});
   const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>([]);
+  const [renamingProjectId, setRenamingProjectId] = useState("");
+  const [projectTitleDraft, setProjectTitleDraft] = useState("");
   const [editing, setEditing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -2607,6 +4524,30 @@ function ProjectsScreen() {
     setEditing(false);
   }
 
+  function startProjectRename(project: Project) {
+    setRenamingProjectId(project.id);
+    setProjectTitleDraft(project.title);
+  }
+
+  function cancelProjectRename() {
+    setRenamingProjectId("");
+    setProjectTitleDraft("");
+  }
+
+  async function saveProjectTitle(project: Project) {
+    setError(null);
+    try {
+      const { project: nextProject } = await apiJson<{ project: Project }>(`/api/projects/${project.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title: projectTitleDraft }),
+      });
+      setProjects((current) => current.map((item) => (item.id === project.id ? nextProject : item)));
+      cancelProjectRename();
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Could not rename project");
+    }
+  }
+
   if (loading) return <Loading />;
 
   return (
@@ -2643,7 +4584,13 @@ function ProjectsScreen() {
       <section className="section-block">
         <div className="section-heading">
           <h2>Projects</h2>
-          <span className="meta">{projects.length} active</span>
+          <div className="small-actions">
+            <span className="meta">{projects.length} active</span>
+            <NavLink className="button primary" to="/projects/new">
+              <Plus size={18} />
+              <span>New Project</span>
+            </NavLink>
+          </div>
         </div>
         {!projects.length ? (
           <Empty>No active projects.</Empty>
@@ -2651,22 +4598,59 @@ function ProjectsScreen() {
           <div className="stack">
             {projects.map((project) => (
               <article className="card project-expand-card" key={project.id}>
-                <button
-                  className="unstyled project-toggle"
-                  type="button"
-                  onClick={() =>
-                    setExpandedProjectIds((ids) =>
-                      ids.includes(project.id) ? ids.filter((id) => id !== project.id) : [...ids, project.id],
-                    )
-                  }
-                >
-                  <div>
-                    <h3>{project.title}</h3>
-                    {project.goal ? <p>{project.goal}</p> : null}
-                    <p className="meta">Started {formatDate(project.started_at)}</p>
+                {renamingProjectId === project.id ? (
+                  <form
+                    className="project-rename-form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void saveProjectTitle(project);
+                    }}
+                  >
+                    <input
+                      autoFocus
+                      aria-label={`Project name for ${project.title}`}
+                      value={projectTitleDraft}
+                      onChange={(event) => setProjectTitleDraft(event.target.value)}
+                      required
+                    />
+                    <div className="small-actions">
+                      <button className="icon-only primary-icon" type="submit" aria-label="Save project name" title="Save project name">
+                        <Check size={20} />
+                      </button>
+                      <button className="icon-only" type="button" onClick={cancelProjectRename} aria-label="Cancel rename" title="Cancel rename">
+                        <X size={20} />
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="project-card-header">
+                    <button
+                      className="unstyled project-toggle"
+                      type="button"
+                      onClick={() =>
+                        setExpandedProjectIds((ids) =>
+                          ids.includes(project.id) ? ids.filter((id) => id !== project.id) : [...ids, project.id],
+                        )
+                      }
+                    >
+                      <div>
+                        <h3>{project.title}</h3>
+                        {project.goal ? <p>{project.goal}</p> : null}
+                        <p className="meta">Started {formatDate(project.started_at)}</p>
+                      </div>
+                      <ChevronDown className={expandedProjectIds.includes(project.id) ? "rotate" : ""} size={20} />
+                    </button>
+                    <button
+                      className="icon-only"
+                      type="button"
+                      onClick={() => startProjectRename(project)}
+                      aria-label={`Edit ${project.title}`}
+                      title="Edit project name"
+                    >
+                      <Pencil size={20} />
+                    </button>
                   </div>
-                  <ChevronDown className={expandedProjectIds.includes(project.id) ? "rotate" : ""} size={20} />
-                </button>
+                )}
                 {expandedProjectIds.includes(project.id) ? (
                   <div className="protocol-list">
                     <NavLink className="protocol-row" to={`/projects/${project.id}`}>

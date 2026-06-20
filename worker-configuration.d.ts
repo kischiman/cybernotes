@@ -8,4 +8,7 @@ interface Env {
   SESSION_SECRET?: string;
   R2_PUBLIC_BASE_URL?: string;
   DEV_AUTH_BYPASS?: string;
+  GEMINI_API_KEY?: string;
+  TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_CHAT_ID?: string;
 }

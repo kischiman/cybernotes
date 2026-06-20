@@ -31,6 +31,7 @@ npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put GOOGLE_CLIENT_SECRET
 npx wrangler secret put ALLOWED_EMAIL
 npx wrangler secret put SESSION_SECRET
+npx wrangler secret put GEMINI_API_KEY
 ```
 
 Set your Google OAuth redirect URI to:
