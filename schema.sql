@@ -185,3 +185,9 @@ CREATE INDEX IF NOT EXISTS idx_checkin_answers_entry_id_position ON checkin_answ
 CREATE INDEX IF NOT EXISTS idx_wins_created_at ON wins(created_at);
 CREATE INDEX IF NOT EXISTS idx_wins_project_id ON wins(project_id);
 CREATE INDEX IF NOT EXISTS idx_articles_updated_at ON articles(updated_at);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT,
+  updated_at TEXT
+);

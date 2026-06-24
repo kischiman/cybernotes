@@ -1027,6 +1027,33 @@ a:focus-visible {
   display: block;
 }
 
+.account-settings {
+  margin-top: 0;
+}
+
+.field-hint {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.account-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.account-actions .button {
+  text-decoration: none;
+}
+
+.settings-subhead {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
 .checkin-settings-list {
   margin-top: 12px;
 }

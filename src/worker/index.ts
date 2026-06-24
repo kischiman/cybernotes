@@ -319,6 +319,22 @@ async function run(env: Env, sql: string, ...bindings: unknown[]) {
   return await env.DB.prepare(sql).bind(...bindings).run();
 }
 
+async function getSetting(env: Env, key: string) {
+  const row = await first<{ value: string | null }>(env, "SELECT value FROM app_settings WHERE key = ?", key);
+  return row?.value ?? null;
+}
+
+async function setSetting(env: Env, key: string, value: string | null) {
+  await run(
+    env,
+    "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?) " +
+      "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    key,
+    value,
+    nowIso(),
+  );
+}
+
 async function withTodoAssignees<T extends TodoRow>(env: Env, todos: T[]) {
   if (!todos.length) return todos.map((todo) => ({ ...todo, assignees: [] as TodoAssignee[] }));
   const placeholders = todos.map(() => "?").join(", ");
@@ -541,6 +557,18 @@ app.get("/auth/logout", async (c) => {
 api.get("/health", (c) => c.json({ ok: true }));
 api.use("*", requireSession);
 api.get("/me", (c) => c.json({ user: c.get("user") }));
+
+api.get("/profile", async (c) => {
+  const name = await getSetting(c.env, "profile_name");
+  return c.json({ email: c.get("user").email, name: name ?? "" });
+});
+
+api.put("/profile", async (c) => {
+  const body = await readJson(c);
+  const name = cleanString(body.name) ?? "";
+  await setSetting(c.env, "profile_name", name || null);
+  return c.json({ email: c.get("user").email, name });
+});
 
 api.post("/transcribe", async (c) => {
   if (!c.env.GEMINI_API_KEY) return jsonError(c, 500, "Transcription failed");
@@ -2694,7 +2722,7 @@ api.post("/telegram/post", async (c) => {
   if (!c.env.TELEGRAM_BOT_TOKEN || !c.env.TELEGRAM_CHAT_ID) {
     return jsonError(c, 500, "Telegram is not configured");
   }
-  const account = c.get("user").email;
+  const account = (await getSetting(c.env, "profile_name")) || c.get("user").email;
   const message = `${text}\n\n— ${account}`;
   try {
     const response = await fetch(

@@ -2982,6 +2982,32 @@ function CheckinSettingsSheet({
   const [draft, setDraft] = useState("");
   const [newQuestion, setNewQuestion] = useState<Record<CheckinSession, string>>({ morning: "", evening: "" });
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [profileName, setProfileName] = useState("");
+  const [profileEmail, setProfileEmail] = useState("");
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profileSaved, setProfileSaved] = useState(false);
+
+  useEffect(() => {
+    void apiJson<{ email: string; name: string }>("/api/profile")
+      .then((profile) => {
+        setProfileEmail(profile.email);
+        setProfileName(profile.name);
+      })
+      .catch(() => {});
+  }, []);
+
+  async function saveProfile() {
+    setSavingProfile(true);
+    setProfileSaved(false);
+    try {
+      await apiJson("/api/profile", { method: "PUT", body: JSON.stringify({ name: profileName.trim() }) });
+      setProfileSaved(true);
+    } catch {
+      // Leave the field as-is so the user can retry.
+    } finally {
+      setSavingProfile(false);
+    }
+  }
 
   async function updateTemplate(template: CheckinTemplate, payload: Partial<Pick<CheckinTemplate, "question" | "position">>) {
     await apiJson(`/api/checkin/templates/${template.id}`, {
@@ -3034,11 +3060,37 @@ function CheckinSettingsSheet({
     <div className="sheet-backdrop">
       <div className="sheet settings-sheet">
         <div className="section-heading">
-          <h2>Check-in Settings</h2>
+          <h2>Settings</h2>
           <button className="icon-only" type="button" onClick={onClose} aria-label="Close" title="Close">
             <X size={20} />
           </button>
         </div>
+        <section className="section-block account-settings">
+          <h3>Account</h3>
+          <label>
+            Profile name
+            <input
+              value={profileName}
+              onChange={(event) => {
+                setProfileName(event.target.value);
+                setProfileSaved(false);
+              }}
+              placeholder={profileEmail || "Your name"}
+            />
+          </label>
+          <p className="field-hint">Shown on your Telegram posts. Falls back to your email if left empty.</p>
+          <div className="account-actions">
+            <button className="button primary" type="button" onClick={() => void saveProfile()} disabled={savingProfile}>
+              <Check size={18} />
+              <span>{profileSaved ? "Saved" : savingProfile ? "Saving..." : "Save name"}</span>
+            </button>
+            <a className="button danger" href="/auth/logout">
+              <LogOut size={18} />
+              <span>Sign out</span>
+            </a>
+          </div>
+        </section>
+        <h3 className="settings-subhead">Check-ins</h3>
         {CHECKIN_SESSIONS.map((session) => (
           <section className="section-block" key={session}>
             <h3>{session === "morning" ? "Morning" : "Evening"}</h3>
