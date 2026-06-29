@@ -1718,6 +1718,23 @@ function TodayScreen() {
     }));
   }
 
+  const hasUnsavedCheckin = CHECKIN_SESSIONS.some((session) => {
+    const saved = answerMap(entries[session]);
+    const current = answers[session];
+    const keys = new Set([...Object.keys(saved), ...Object.keys(current)]);
+    return [...keys].some((key) => (current[key] || "") !== (saved[key] || ""));
+  });
+
+  useEffect(() => {
+    if (!hasUnsavedCheckin) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [hasUnsavedCheckin]);
+
   function selectPastDate(date: string) {
     setSelectedDate(date);
     setDatesOpen(false);
@@ -2928,13 +2945,6 @@ function CheckinSessionPanel({
       </button>
       {isOpen ? (
         <div className="checkin-form">
-          {!readOnly ? (
-            <div className="action-row align-end">
-              <IconButton type="button" className="primary" onClick={onSave} icon={<Check size={18} />}>
-                Save
-              </IconButton>
-            </div>
-          ) : null}
           {readOnly ? (
             historicalAnswers.length ? (
               historicalAnswers.map((answer) => (
@@ -2947,19 +2957,26 @@ function CheckinSessionPanel({
               <Empty>No saved {session} check-in.</Empty>
             )
           ) : (
-            templates.map((template) => (
-              <label key={template.id}>
-                <span>
-                  {template.question}
-                  {template.question.toLowerCase() === "letters to god" ? <em className="optional">optional</em> : null}
-                </span>
-                <textarea
-                  value={answers[template.id] || ""}
-                  onChange={(event) => onAnswer(template.id, event.target.value)}
-                  rows={4}
-                />
-              </label>
-            ))
+            <>
+              {templates.map((template) => (
+                <label key={template.id}>
+                  <span>
+                    {template.question}
+                    {template.question.toLowerCase() === "letters to god" ? <em className="optional">optional</em> : null}
+                  </span>
+                  <textarea
+                    value={answers[template.id] || ""}
+                    onChange={(event) => onAnswer(template.id, event.target.value)}
+                    rows={4}
+                  />
+                </label>
+              ))}
+              <div className="action-row align-end">
+                <IconButton type="button" className="primary" onClick={onSave} icon={<Check size={18} />}>
+                  Save
+                </IconButton>
+              </div>
+            </>
           )}
         </div>
       ) : null}
