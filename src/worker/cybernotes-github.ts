@@ -98,6 +98,8 @@ export class CybernotesRepo {
     const data = (await res.json()) as { tree?: Array<{ path: string; type: string }> };
     const folders = (data.tree ?? [])
       .filter((entry) => entry.type === "tree")
+      // Skip hidden/config directories (e.g. .obsidian, .git) — not real categories.
+      .filter((entry) => !entry.path.split("/").some((segment) => segment.startsWith(".")))
       .map((entry) => entry.path);
     return [...new Set(folders)].sort((a, b) => a.localeCompare(b));
   }

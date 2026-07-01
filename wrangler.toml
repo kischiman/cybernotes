@@ -2,6 +2,13 @@ name = "cybernotes"
 compatibility_date = "2026-05-29"
 main = "./src/worker/index.ts"
 
+# GitHub vault the app files protocol-cycle syntheses into. Kept as a separate
+# repo from this app's code (the names would otherwise collide case-insensitively).
+[vars]
+GITHUB_OWNER = "kischiman"
+GITHUB_REPO = "cybernotes-vault"
+GITHUB_BRANCH = "main"
+
 [assets]
 not_found_handling = "single-page-application"
 run_worker_first = ["/api/*", "/auth/*"]
