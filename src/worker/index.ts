@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { Context, MiddlewareHandler } from "hono";
+import { CybernotesRepo } from "./cybernotes-github";
 
 type User = {
   email: string;
@@ -66,6 +67,8 @@ type ProtocolCycleRow = {
   notes: string | null;
   results: string | null;
   completed_at: string | null;
+  github_path: string | null;
+  github_url: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -317,6 +320,16 @@ async function all<T>(env: Env, sql: string, ...bindings: unknown[]) {
 
 async function run(env: Env, sql: string, ...bindings: unknown[]) {
   return await env.DB.prepare(sql).bind(...bindings).run();
+}
+
+function githubRepo(env: Env): CybernotesRepo | null {
+  if (!env.GITHUB_TOKEN) return null;
+  return new CybernotesRepo({
+    token: env.GITHUB_TOKEN,
+    owner: env.GITHUB_OWNER || undefined,
+    repo: env.GITHUB_REPO || undefined,
+    branch: env.GITHUB_BRANCH || undefined,
+  });
 }
 
 async function getSetting(env: Env, key: string) {
@@ -666,6 +679,49 @@ api.post("/transcribe-audio", async (c) => {
   return c.json({ text });
 });
 
+// Transcribe an arbitrary uploaded audio file via OpenAI Whisper. Unlike the
+// Gemini-backed voice-memo route above, this accepts whatever format the user
+// drops in (mp3, m4a, wav, etc.) and forwards the raw file straight to Whisper.
+// Audio is never persisted — we stream it through and return plain text.
+api.post("/transcribe-file", async (c) => {
+  if (!c.env.OPENAI_API_KEY) return jsonError(c, 500, "OPENAI_API_KEY is not configured");
+
+  let form: FormData;
+  try {
+    form = await c.req.formData();
+  } catch {
+    return jsonError(c, 400, "No audio provided");
+  }
+  const audio = form.get("audio");
+  if (!(audio instanceof File)) return jsonError(c, 400, "No audio provided");
+  // Whisper's hard limit is 25 MB per request.
+  if (audio.size > 25 * 1024 * 1024) return jsonError(c, 400, "Audio file is too large (max 25 MB)");
+
+  const upstream = new FormData();
+  upstream.set("file", audio, audio.name || "audio");
+  upstream.set("model", "whisper-1");
+  upstream.set("response_format", "text");
+
+  let response: Response;
+  try {
+    response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { authorization: `Bearer ${c.env.OPENAI_API_KEY}` },
+      body: upstream,
+    });
+  } catch {
+    return jsonError(c, 500, "Could not reach the transcription service");
+  }
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    return jsonError(c, 500, detail ? `Transcription failed: ${detail.slice(0, 200)}` : "Transcription failed");
+  }
+
+  const text = (await response.text()).trim();
+  return c.json({ text });
+});
+
 api.get("/vision", async (c) => {
   const vision = await first<{ id: string; body: string | null; updated_at: string | null }>(
     c.env,
@@ -821,6 +877,17 @@ function cyclePayload(cycle: ProtocolCycleRow, photos: ProtocolCyclePhotoRow[] =
     photos: photos.map(cyclePhotoPayload),
   };
 }
+
+api.get("/github/folders", async (c) => {
+  const repo = githubRepo(c.env);
+  if (!repo) return c.json({ configured: false, folders: [] as string[] });
+  try {
+    const folders = await repo.listFolders();
+    return c.json({ configured: true, folders });
+  } catch (error) {
+    return jsonError(c, 500, error instanceof Error ? error.message : "Could not list GitHub folders");
+  }
+});
 
 api.get("/projects/:id/cycles", async (c) => {
   const projectId = c.req.param("id");
@@ -1007,6 +1074,33 @@ api.get("/protocols/:id/entries", async (c) => {
   return c.json({ entries: await entriesWithPhotos(c.env, protocolId) });
 });
 
+const DEFAULT_SYNTHESIS_PROMPT =
+  "You synthesize an N=1 experiment protocol cycle. Write concise, useful Markdown. " +
+  "Use only the provided project, protocol, notes, and to-do context. Avoid inventing facts. " +
+  "Name patterns, tensions, evidence quality, concrete results, and next-cycle design implications.\n\n" +
+  "Return Markdown with these headings: Synthesis, Patterns, Results, Evidence Gaps, Next Phase.";
+
+api.get("/synthesis-prompt", async (c) => {
+  const stored = await getSetting(c.env, "cycle_synthesis_prompt");
+  return c.json({
+    prompt: stored ?? DEFAULT_SYNTHESIS_PROMPT,
+    is_custom: Boolean(stored),
+    default: DEFAULT_SYNTHESIS_PROMPT,
+  });
+});
+
+api.put("/synthesis-prompt", async (c) => {
+  const body = await readJson(c);
+  const prompt = cleanString(body.prompt) ?? "";
+  // An empty prompt resets to the built-in default.
+  await setSetting(c.env, "cycle_synthesis_prompt", prompt || null);
+  return c.json({
+    prompt: prompt || DEFAULT_SYNTHESIS_PROMPT,
+    is_custom: Boolean(prompt),
+    default: DEFAULT_SYNTHESIS_PROMPT,
+  });
+});
+
 api.post("/protocols/:id/cycle-draft", async (c) => {
   const protocolId = c.req.param("id");
   const protocol = await first<ProtocolRow & { project_title: string; project_goal: string | null }>(
@@ -1038,10 +1132,7 @@ api.post("/protocols/:id/cycle-draft", async (c) => {
   const todoNotes = todos.length
     ? todos.map((todo) => `- [${todo.done ? "x" : " "}] ${todo.body}${todo.due_date ? ` (due ${todo.due_date})` : ""}`).join("\n")
     : "No to-dos were attached to this protocol.";
-  const system =
-    "You synthesize an N=1 experiment protocol cycle. Write concise, useful Markdown. " +
-    "Use only the provided project, protocol, notes, and to-do context. Avoid inventing facts. " +
-    "Name patterns, tensions, evidence quality, concrete results, and next-cycle design implications.";
+  const system = (await getSetting(c.env, "cycle_synthesis_prompt")) || DEFAULT_SYNTHESIS_PROMPT;
   const user = [
     `Project: ${protocol.project_title}`,
     protocol.project_goal ? `Project goal: ${protocol.project_goal}` : "",
@@ -1052,7 +1143,6 @@ api.post("/protocols/:id/cycle-draft", async (c) => {
     protocol.deadline ? `Deadline: ${protocol.deadline}` : "",
     `\nEntries:\n${entryNotes}`,
     `\nTo-dos:\n${todoNotes}`,
-    "\nReturn Markdown with these headings: Synthesis, Patterns, Results, Evidence Gaps, Next Phase.",
   ].filter(Boolean).join("\n\n");
 
   try {
@@ -1072,6 +1162,7 @@ api.post("/protocols/:id/cycles", async (c) => {
   const synthesis = nullableString(body.synthesis);
   const notes = nullableString(body.notes);
   const results = nullableString(body.results);
+  const category = nullableString(body.category);
   if (!synthesis && !notes && !results) return jsonError(c, 400, "Add synthesis, notes, or results before saving");
 
   const timestamp = nowIso();
@@ -1084,6 +1175,8 @@ api.post("/protocols/:id/cycles", async (c) => {
     notes,
     results,
     completed_at: nullableString(body.completed_at) || timestamp,
+    github_path: null,
+    github_url: null,
     created_at: timestamp,
     updated_at: timestamp,
   };
@@ -1091,8 +1184,8 @@ api.post("/protocols/:id/cycles", async (c) => {
   await run(
     c.env,
     `INSERT INTO protocol_cycles
-      (id, project_id, protocol_id, protocol_title, synthesis, notes, results, completed_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, project_id, protocol_id, protocol_title, synthesis, notes, results, completed_at, github_path, github_url, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     cycle.id,
     cycle.project_id,
     cycle.protocol_id,
@@ -1101,12 +1194,61 @@ api.post("/protocols/:id/cycles", async (c) => {
     cycle.notes,
     cycle.results,
     cycle.completed_at,
+    cycle.github_path,
+    cycle.github_url,
     cycle.created_at,
     cycle.updated_at,
   );
   await run(c.env, "UPDATE protocols SET status = 'completed', updated_at = ? WHERE id = ?", timestamp, protocol.id);
 
-  return c.json({ cycle: cyclePayload(cycle) }, 201);
+  // File the synthesis into the GitHub vault when a category was chosen.
+  let githubError: string | null = null;
+  const repo = githubRepo(c.env);
+  if (category && repo) {
+    try {
+      const project = await first<ProjectRow>(c.env, "SELECT * FROM projects WHERE id = ?", protocol.project_id);
+      const started = protocol.created_at;
+      const completed = cycle.completed_at || timestamp;
+      const durationDays = Math.max(0, Math.round((Date.parse(completed) - Date.parse(started)) / 86_400_000));
+      const sections: string[] = [];
+      if (synthesis) sections.push(synthesis.trim());
+      if (results) sections.push(`## Results\n\n${results.trim()}`);
+      if (notes) sections.push(`## Notes\n\n${notes.trim()}`);
+      const completedDate = completed.slice(0, 10);
+      const result = await repo.saveNote({
+        title: `${protocol.title} — ${completedDate}`,
+        body: sections.join("\n\n"),
+        category,
+        unique: true,
+        frontmatter: {
+          project: project?.title ?? "",
+          protocol: protocol.title,
+          category,
+          started,
+          completed,
+          duration_days: durationDays,
+          duration: `${durationDays} day${durationDays === 1 ? "" : "s"}`,
+          status: "completed",
+          tags: ["protocol-cycle"],
+        },
+        commitMessage: `Add protocol cycle: ${protocol.title} (${completedDate})`,
+      });
+      cycle.github_path = result.path;
+      cycle.github_url = result.url;
+      await run(
+        c.env,
+        "UPDATE protocol_cycles SET github_path = ?, github_url = ?, updated_at = ? WHERE id = ?",
+        cycle.github_path,
+        cycle.github_url,
+        nowIso(),
+        cycle.id,
+      );
+    } catch (error) {
+      githubError = error instanceof Error ? error.message : "Could not save to GitHub";
+    }
+  }
+
+  return c.json({ cycle: cyclePayload(cycle), github_error: githubError }, 201);
 });
 
 api.post("/protocols/:id/entries", async (c) => {

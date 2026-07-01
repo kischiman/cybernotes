@@ -31,6 +31,7 @@ import {
   ClipboardList,
   Download,
   Folder,
+  Github,
   GripVertical,
   Eye,
   History,
@@ -104,6 +105,8 @@ type ProtocolCycle = {
   notes: string | null;
   results: string | null;
   completed_at: string | null;
+  github_path: string | null;
+  github_url: string | null;
   created_at: string;
   updated_at: string;
   photos: ProtocolCyclePhoto[];
@@ -349,6 +352,40 @@ function encodeWav(samples: Float32Array, sampleRate: number): Blob {
     view.setInt16(offset, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
   }
   return new Blob([buffer], { type: "audio/wav" });
+}
+
+// Whisper rejects requests over 25 MB, so larger uploads are decoded, downsampled
+// to 16 kHz mono, and split into fixed-length chunks that each stay well under the
+// limit. At 16 kHz mono 16-bit (~32 KB/s) a 10-minute chunk is ~19 MB. Chunks are
+// transcribed separately and the transcripts are stitched back together.
+const WHISPER_MAX_BYTES = 24 * 1024 * 1024;
+const TRANSCRIBE_CHUNK_SECONDS = 600;
+
+async function fileToWavChunks(file: File): Promise<Blob[]> {
+  const AudioCtx: typeof AudioContext =
+    window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+  const decodeCtx = new AudioCtx();
+  let decoded: AudioBuffer;
+  try {
+    decoded = await decodeCtx.decodeAudioData(await file.arrayBuffer());
+  } finally {
+    void decodeCtx.close();
+  }
+  const targetRate = 16000;
+  const length = Math.max(1, Math.ceil(decoded.duration * targetRate));
+  const offline = new OfflineAudioContext(1, length, targetRate);
+  const source = offline.createBufferSource();
+  source.buffer = decoded;
+  source.connect(offline.destination);
+  source.start();
+  const rendered = await offline.startRendering();
+  const samples = rendered.getChannelData(0);
+  const chunkSize = TRANSCRIBE_CHUNK_SECONDS * targetRate;
+  const chunks: Blob[] = [];
+  for (let start = 0; start < samples.length; start += chunkSize) {
+    chunks.push(encodeWav(samples.subarray(start, start + chunkSize), targetRate));
+  }
+  return chunks.length ? chunks : [encodeWav(samples, targetRate)];
 }
 
 function useSafeId() {
@@ -3003,12 +3040,74 @@ function CheckinSettingsSheet({
   const [profileEmail, setProfileEmail] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileSaved, setProfileSaved] = useState(false);
+  const [synthesisPrompt, setSynthesisPrompt] = useState("");
+  const [synthesisDefault, setSynthesisDefault] = useState("");
+  const [savingSynthesis, setSavingSynthesis] = useState(false);
+  const [synthesisSaved, setSynthesisSaved] = useState(false);
+  const [audioDragging, setAudioDragging] = useState(false);
+  const [audioName, setAudioName] = useState("");
+  const [transcribingAudio, setTranscribingAudio] = useState(false);
+  const [audioProgress, setAudioProgress] = useState("");
+  const [transcript, setTranscript] = useState("");
+  const [transcriptCopied, setTranscriptCopied] = useState(false);
+  const [audioError, setAudioError] = useState<string | null>(null);
+  const audioInputRef = useRef<HTMLInputElement | null>(null);
+
+  async function transcribeFile(file: File) {
+    setAudioError(null);
+    setTranscript("");
+    setTranscriptCopied(false);
+    setAudioName(file.name);
+    setTranscribingAudio(true);
+    setAudioProgress("");
+    try {
+      let parts: Blob[];
+      if (file.size <= WHISPER_MAX_BYTES) {
+        parts = [file];
+      } else {
+        setAudioProgress("Preparing audio…");
+        parts = await fileToWavChunks(file);
+      }
+      const texts: string[] = [];
+      for (let i = 0; i < parts.length; i += 1) {
+        if (parts.length > 1) setAudioProgress(`Transcribing part ${i + 1} of ${parts.length}…`);
+        const form = new FormData();
+        form.append("audio", parts[i], parts[i] instanceof File ? (parts[i] as File).name : `chunk-${i + 1}.wav`);
+        const { text } = await apiJson<{ text: string }>("/api/transcribe-file", { method: "POST", body: form });
+        if (text.trim()) texts.push(text.trim());
+      }
+      const joined = texts.join("\n\n");
+      setTranscript(joined);
+      if (!joined.trim()) setAudioError("No speech was detected in that file.");
+    } catch (error) {
+      setAudioError(error instanceof Error ? error.message : "Transcription failed");
+    } finally {
+      setTranscribingAudio(false);
+      setAudioProgress("");
+    }
+  }
+
+  async function copyTranscript() {
+    try {
+      await navigator.clipboard.writeText(transcript);
+      setTranscriptCopied(true);
+      window.setTimeout(() => setTranscriptCopied(false), 2000);
+    } catch {
+      // Clipboard can be unavailable; the textarea is selectable as a fallback.
+    }
+  }
 
   useEffect(() => {
     void apiJson<{ email: string; name: string }>("/api/profile")
       .then((profile) => {
         setProfileEmail(profile.email);
         setProfileName(profile.name);
+      })
+      .catch(() => {});
+    void apiJson<{ prompt: string; default: string }>("/api/synthesis-prompt")
+      .then((data) => {
+        setSynthesisPrompt(data.prompt);
+        setSynthesisDefault(data.default);
       })
       .catch(() => {});
   }, []);
@@ -3023,6 +3122,23 @@ function CheckinSettingsSheet({
       // Leave the field as-is so the user can retry.
     } finally {
       setSavingProfile(false);
+    }
+  }
+
+  async function saveSynthesisPrompt() {
+    setSavingSynthesis(true);
+    setSynthesisSaved(false);
+    try {
+      const { prompt } = await apiJson<{ prompt: string }>("/api/synthesis-prompt", {
+        method: "PUT",
+        body: JSON.stringify({ prompt: synthesisPrompt.trim() }),
+      });
+      setSynthesisPrompt(prompt);
+      setSynthesisSaved(true);
+    } catch {
+      // Leave the field as-is so the user can retry.
+    } finally {
+      setSavingSynthesis(false);
     }
   }
 
@@ -3105,6 +3221,107 @@ function CheckinSettingsSheet({
               <LogOut size={18} />
               <span>Sign out</span>
             </a>
+          </div>
+        </section>
+        <section className="section-block">
+          <h3>Audio transcription</h3>
+          <p className="field-hint">Drop an audio file (mp3, m4a, wav, webm…) to get a transcript you can copy. Large files are split into chunks automatically. Files are sent to OpenAI Whisper and never stored.</p>
+          <div
+            className={`audio-dropzone${audioDragging ? " dragging" : ""}`}
+            role="button"
+            tabIndex={0}
+            onClick={() => audioInputRef.current?.click()}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                audioInputRef.current?.click();
+              }
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              setAudioDragging(true);
+            }}
+            onDragLeave={() => setAudioDragging(false)}
+            onDrop={(event) => {
+              event.preventDefault();
+              setAudioDragging(false);
+              const file = event.dataTransfer.files?.[0];
+              if (file) void transcribeFile(file);
+            }}
+          >
+            <Mic size={20} />
+            <span>
+              {transcribingAudio
+                ? audioProgress || `Transcribing ${audioName}…`
+                : audioName && transcript
+                  ? audioName
+                  : "Drop an audio file here or click to choose"}
+            </span>
+          </div>
+          <input
+            ref={audioInputRef}
+            type="file"
+            accept="audio/*"
+            hidden
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void transcribeFile(file);
+              event.target.value = "";
+            }}
+          />
+          {audioError ? <p className="field-error">{audioError}</p> : null}
+          {transcript ? (
+            <div className="stack compact-stack">
+              <textarea
+                className="transcript-output"
+                value={transcript}
+                readOnly
+                rows={8}
+                onFocus={(event) => event.target.select()}
+              />
+              <div className="account-actions">
+                <button className="button primary" type="button" onClick={() => void copyTranscript()}>
+                  <Check size={18} />
+                  <span>{transcriptCopied ? "Copied" : "Copy transcript"}</span>
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </section>
+        <section className="section-block">
+          <h3>Synthesis agent</h3>
+          <p className="field-hint">
+            Instructions the AI follows when drafting a protocol cycle synthesis. Your project, protocol, notes, and to-dos
+            are added automatically — describe the tone, focus, and headings you want.
+          </p>
+          <label>
+            <span className="field-label">Instructions</span>
+            <textarea
+              value={synthesisPrompt}
+              onChange={(event) => {
+                setSynthesisPrompt(event.target.value);
+                setSynthesisSaved(false);
+              }}
+              rows={10}
+              placeholder={synthesisDefault}
+            />
+          </label>
+          <div className="account-actions">
+            <button className="button primary" type="button" onClick={() => void saveSynthesisPrompt()} disabled={savingSynthesis}>
+              <Check size={18} />
+              <span>{synthesisSaved ? "Saved" : savingSynthesis ? "Saving..." : "Save instructions"}</span>
+            </button>
+            <button
+              className="button"
+              type="button"
+              onClick={() => {
+                setSynthesisPrompt(synthesisDefault);
+                setSynthesisSaved(false);
+              }}
+              disabled={savingSynthesis || synthesisPrompt.trim() === synthesisDefault.trim()}
+            >
+              <span>Reset to default</span>
+            </button>
           </div>
         </section>
         <h3 className="settings-subhead">Check-ins</h3>
@@ -3522,11 +3739,25 @@ function ProjectScreen({ readOnly = false }: { readOnly?: boolean }) {
                   <h3>{cycle.protocol_title}</h3>
                   <p className="meta">{formatDateTime(cycle.completed_at)}</p>
                 </div>
-                {cycle.protocol_id ? (
-                  <NavLink className="icon-only" to={`/protocols/${cycle.protocol_id}`} aria-label="Open protocol" title="Open protocol">
-                    <Folder size={18} />
-                  </NavLink>
-                ) : null}
+                <div className="small-actions">
+                  {cycle.github_url ? (
+                    <a
+                      className="icon-only"
+                      href={cycle.github_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label="View on GitHub"
+                      title="View on GitHub"
+                    >
+                      <Github size={18} />
+                    </a>
+                  ) : null}
+                  {cycle.protocol_id ? (
+                    <NavLink className="icon-only" to={`/protocols/${cycle.protocol_id}`} aria-label="Open protocol" title="Open protocol">
+                      <Folder size={18} />
+                    </NavLink>
+                  ) : null}
+                </div>
               </div>
               {cycle.synthesis ? (
                 <div className="markdown-body cycle-markdown">
@@ -3964,6 +4195,10 @@ function CycleCompletionSheet({
   const [synthesis, setSynthesis] = useState("");
   const [notes, setNotes] = useState("");
   const [results, setResults] = useState("");
+  const [category, setCategory] = useState("");
+  const [folders, setFolders] = useState<string[]>([]);
+  const [githubConfigured, setGithubConfigured] = useState(false);
+  const [githubNotice, setGithubNotice] = useState<string | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [drafting, setDrafting] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -3998,6 +4233,22 @@ function CycleCompletionSheet({
       active = false;
     };
   }, [protocol.id]);
+
+  useEffect(() => {
+    let active = true;
+    apiJson<{ configured: boolean; folders: string[] }>("/api/github/folders")
+      .then((data) => {
+        if (!active) return;
+        setGithubConfigured(data.configured);
+        setFolders(data.folders);
+      })
+      .catch(() => {
+        if (active) setGithubConfigured(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   function isDirty() {
     return Boolean(synthesis.trim() || notes.trim() || results.trim() || files.length);
@@ -4100,18 +4351,27 @@ function CycleCompletionSheet({
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    // The cycle is already saved; the GitHub sync just failed — let the user close out.
+    if (githubNotice) {
+      onClose();
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
-      const { cycle } = await apiJson<{ cycle: ProtocolCycle }>(`/api/protocols/${protocol.id}/cycles`, {
-        method: "POST",
-        body: JSON.stringify({
-          synthesis,
-          notes,
-          results,
-          completed_at: new Date().toISOString(),
-        }),
-      });
+      const { cycle, github_error } = await apiJson<{ cycle: ProtocolCycle; github_error: string | null }>(
+        `/api/protocols/${protocol.id}/cycles`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            synthesis,
+            notes,
+            results,
+            category: category.trim() || undefined,
+            completed_at: new Date().toISOString(),
+          }),
+        },
+      );
       for (const [index, file] of files.entries()) {
         await uploadCyclePhoto(cycle.id, file, (fileProgress) => {
           setProgress(Math.round(((index + fileProgress / 100) / files.length) * 100));
@@ -4119,7 +4379,11 @@ function CycleCompletionSheet({
       }
       setProgress(null);
       await onSaved();
-      onClose();
+      if (github_error) {
+        setGithubNotice(`Cycle saved, but it couldn't be filed to GitHub: ${github_error}`);
+      } else {
+        onClose();
+      }
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "Could not complete cycle");
     } finally {
@@ -4144,6 +4408,33 @@ function CycleCompletionSheet({
         </div>
       </div>
       <ErrorBanner message={error} />
+      {githubNotice ? <p className="inline-error">{githubNotice}</p> : null}
+      <label>
+        <span className="field-label-row">
+          <Folder size={16} />
+          Save to (Cybernotes folder)
+        </span>
+        {githubConfigured ? (
+          <>
+            <input
+              type="text"
+              list="cybernotes-folders"
+              value={category}
+              onChange={(event) => setCategory(event.target.value)}
+              placeholder="Pick a folder or type a new one"
+              autoComplete="off"
+            />
+            <datalist id="cybernotes-folders">
+              {folders.map((folder) => (
+                <option key={folder} value={folder} />
+              ))}
+            </datalist>
+            <span className="field-hint">Filed as a Markdown note in your GitHub vault. Leave blank to skip.</span>
+          </>
+        ) : (
+          <span className="field-hint">Connect GitHub (set GITHUB_TOKEN) to file this synthesis in your vault.</span>
+        )}
+      </label>
       <label>
         Synthesis
         <div className="entry-body-field">

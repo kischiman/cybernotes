@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS protocol_cycles (
   notes TEXT,
   results TEXT,
   completed_at TEXT,
+  github_path TEXT,
+  github_url TEXT,
   created_at TEXT,
   updated_at TEXT
 );
